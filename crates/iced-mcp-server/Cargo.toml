@@ -1,0 +1,27 @@
+[package]
+name = "iced-mcp-server"
+edition.workspace = true
+version.workspace = true
+description = "MCP server that lets AI agents launch, inspect and drive iced desktop apps"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "iced-mcp"
+path = "src/main.rs"
+
+[dependencies]
+accesskit.workspace = true
+iced-mcp-protocol = { workspace = true, features = ["schemars"] }
+base64 = { workspace = true }
+png = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "net", "process"] }

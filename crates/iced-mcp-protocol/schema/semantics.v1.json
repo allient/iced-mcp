@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_SemanticNode",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/SemanticNode"
+  },
+  "$defs": {
+    "Rect": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "format": "float"
+        },
+        "width": {
+          "type": "number",
+          "format": "float"
+        },
+        "x": {
+          "type": "number",
+          "format": "float"
+        },
+        "y": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "SemanticNode": {
+      "description": "One thing a custom-drawn widget shows. Serialized as\n`{\"role\":\"bar\",\"name\":\"BTCUSDT M1 12:45\",\"value\":\"O … C …\",\"id\":\"bar-…\",\"bounds\":{…},\"children\":[…]}`;\n`value`, `id` and `children` are optional.",
+      "type": "object",
+      "properties": {
+        "bounds": {
+          "description": "Logical pixels in window coordinates.",
+          "$ref": "#/$defs/Rect"
+        },
+        "checked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SemanticNode"
+          }
+        },
+        "choices": {
+          "description": "Currently enabled values for a select-like control.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "description": "A longer explanation than the accessible name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disabled": {
+          "description": "Control states are explicit; omitted values are unknown.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "expanded": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "indeterminate": {
+          "description": "Tri-state checkbox status when checked cannot be represented as bool.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "inverted": {
+          "description": "Whether visual direction is reversed.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_numeric_value": {
+          "description": "Inclusive maximum for a numeric control.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "min_numeric_value": {
+          "description": "Inclusive minimum for a numeric control.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "name": {
+          "type": "string"
+        },
+        "numeric_value": {
+          "description": "Current numeric value for controls such as sliders.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "numeric_value_step": {
+          "description": "Smallest increment accepted by a numeric control.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "placeholder": {
+          "description": "Placeholder for empty text controls.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "type": "string"
+        },
+        "selected": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track_bounds": {
+          "description": "Full track bounds for setting a slider value; `bounds` remains the thumb target.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "description": "Text, a number or any JSON; shown as text."
+        },
+        "vertical": {
+          "description": "Whether the slider track runs vertically.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "role",
+        "name",
+        "bounds"
+      ]
+    }
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "iced-mcp flow",
+  "description": "A recorded path through an iced app, replayed as a regression test by `flow_run` / `iced-mcp run-flow`.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Editors validate against this; `schema/flow.v1.json` in iced-mcp-server.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "launch": {
+      "description": "How to start the app, for an end-to-end flow.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FlowLaunch"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prerequisite": {
+      "description": "What must be true before a fragment runs.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FlowStep"
+      }
+    }
+  },
+  "required": [
+    "steps"
+  ],
+  "$defs": {
+    "FlowLaunch": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "command"
+      ]
+    },
+    "FlowStep": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "One of [`STEP_ACTIONS`]; `args` are that tool's parameters.",
+          "type": "string"
+        },
+        "args": true
+      },
+      "required": [
+        "action"
+      ]
+    }
+  }
+}

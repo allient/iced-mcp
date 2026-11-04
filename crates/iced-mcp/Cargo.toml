@@ -1,0 +1,25 @@
+[package]
+name = "iced-mcp"
+edition.workspace = true
+version.workspace = true
+description = "In-app bridge that lets AI agents inspect and drive any iced application over MCP"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# The bridge needs no renderer of its own: iced with `advanced` only.
+iced = { workspace = true }
+iced_winit = { workspace = true }
+iced-mcp-protocol = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+png = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The example is a real app, so it needs iced's default renderers.
+iced = { version = "0.14", features = ["advanced"] }
