@@ -24,7 +24,10 @@ iced-mcp = { path = "crates/iced-mcp", version = "0.1.0" }
 
 # iced is pre-1.0 and every minor breaks API: pinned to one minor.
 # The bridge runs a custom `Program` through the shell directly, renderer-free.
-iced = { version = "0.14", default-features = false, features = ["advanced"] }
+# `thread-pool`: iced refuses to compile without an executor, and the bridge
+# must build on its own (cargo publish, docs.rs). An app that enables `tokio`
+# or `smol` still gets that one: iced picks them before the thread pool.
+iced = { version = "0.14", default-features = false, features = ["advanced", "thread-pool"] }
 iced_winit = { version = "0.14", default-features = false }
 
 accesskit = { version = "0.25.1", features = ["serde"] }

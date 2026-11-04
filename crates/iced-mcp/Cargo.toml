@@ -12,7 +12,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-# The bridge needs no renderer of its own: iced with `advanced` only.
+# The bridge needs no renderer of its own: iced with `advanced` and an
+# executor only.
 iced = { workspace = true }
 iced_winit = { workspace = true }
 iced-mcp-protocol = { workspace = true }
