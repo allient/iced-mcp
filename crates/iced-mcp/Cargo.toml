@@ -27,8 +27,8 @@ serde_json = { workspace = true }
 iced = { version = "0.14", features = ["advanced"] }
 
 [features]
-# winit needs at least one Linux backend to compile there. On by default, as
+# iced and winit need at least one Linux backend to compile there. On by default, as
 # in iced; an app that wants only one can turn the defaults off.
 default = ["x11", "wayland"]
-x11 = ["iced_winit/x11"]
-wayland = ["iced_winit/wayland"]
+x11 = ["iced/x11"]
+wayland = ["iced/wayland"]
