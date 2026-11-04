@@ -10,6 +10,8 @@ resolver = "2"
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
+# `slice::as_chunks` (crates/iced-mcp-server/src/diff.rs) is stable since 1.88.
+rust-version = "1.88"
 repository = "https://github.com/allient/iced-mcp"
 homepage = "https://github.com/allient/iced-mcp"
 readme = "README.md"

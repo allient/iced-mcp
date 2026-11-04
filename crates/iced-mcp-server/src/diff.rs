@@ -86,8 +86,10 @@ pub(crate) fn decode(png_bytes: &[u8]) -> Result<Image, String> {
     let rgba = match (info.color_type, info.bit_depth) {
         (png::ColorType::Rgba, png::BitDepth::Eight) => buffer,
         (png::ColorType::Rgb, png::BitDepth::Eight) => buffer
-            .chunks_exact(3)
-            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
             .collect(),
         other => {
             return Err(format!(

@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 description = "In-app bridge that lets AI agents inspect and drive any iced application over MCP"
 license.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"

@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 description = "Wire protocol between an app's iced-mcp bridge and the iced-mcp server"
 license.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"

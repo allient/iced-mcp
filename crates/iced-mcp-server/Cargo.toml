@@ -4,6 +4,7 @@ edition.workspace = true
 version.workspace = true
 description = "MCP server that lets AI agents launch, inspect and drive iced desktop apps"
 license.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"
