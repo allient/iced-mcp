@@ -78,7 +78,10 @@ impl Comparison {
 pub(crate) fn decode(png_bytes: &[u8]) -> Result<Image, String> {
     let decoder = png::Decoder::new(Cursor::new(png_bytes));
     let mut reader = decoder.read_info().map_err(|e| format!("not a PNG: {e}"))?;
-    let mut buffer = vec![0; reader.output_buffer_size()];
+    let size = reader
+        .output_buffer_size()
+        .ok_or("the PNG is too large to decode")?;
+    let mut buffer = vec![0; size];
     let info = reader
         .next_frame(&mut buffer)
         .map_err(|e| format!("cannot read the PNG: {e}"))?;

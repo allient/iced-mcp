@@ -1,0 +1,5 @@
+# The toolchain for developing and CI. Library users only need
+# `rust-version` (Cargo.toml), the minimum supported Rust.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

@@ -25,3 +25,10 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # The example is a real app, so it needs iced's default renderers.
 iced = { version = "0.14", features = ["advanced"] }
+
+[features]
+# winit needs at least one Linux backend to compile there. On by default, as
+# in iced; an app that wants only one can turn the defaults off.
+default = ["x11", "wayland"]
+x11 = ["iced_winit/x11"]
+wayland = ["iced_winit/wayland"]

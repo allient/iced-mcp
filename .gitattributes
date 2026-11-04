@@ -1,0 +1,2 @@
+# Generated schemas are compared byte for byte by tests: keep LF everywhere.
+* text=auto eol=lf
