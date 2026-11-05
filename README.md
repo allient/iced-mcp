@@ -137,7 +137,9 @@ Requires iced **0.14**. The bridge only listens on `127.0.0.1`; set
 
 iced-mcp follows the shape of the projects that did this first for other
 toolkits: [mcp-server-tauri] (Tauri webviews), [marionette_mcp] (Flutter) and
-[egui_mcp] (egui). Its flows and visual baselines borrow from end-to-end
+[egui_mcp] (egui). [eguidev] showed how far in-process automation can go for
+egui: layout diagnostics, structural assertions, fixtures and a smoke-test
+runner. Its flows and visual baselines borrow from end-to-end
 tools like Playwright.
 
 ## Contributing
@@ -153,3 +155,4 @@ MIT, see [LICENSE](https://github.com/allient/iced-mcp/blob/main/LICENSE).
 [mcp-server-tauri]: https://github.com/hypothesi/mcp-server-tauri
 [marionette_mcp]: https://github.com/leancodepl/marionette_mcp
 [egui_mcp]: https://github.com/dijdzv/egui-mcp
+[eguidev]: https://github.com/cortesi/eguidev
