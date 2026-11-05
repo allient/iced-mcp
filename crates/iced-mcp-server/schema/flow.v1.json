@@ -50,6 +50,874 @@
     "steps"
   ],
   "$defs": {
+    "AppActionParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "description": "Its arguments, as its description says.",
+          "default": null
+        },
+        "name": {
+          "description": "The action's name, from `app_actions`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "ClickParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "button": {
+          "description": "left (default), right or middle.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MouseButton"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "count": {
+          "description": "2 for a double click.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modifiers": {
+          "description": "Modifiers held during the click, e.g. \"Shift\" or \"Cmd+Shift\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "snapshot": {
+          "description": "Append a fresh snapshot to the reply.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "DiagnoseParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kinds": {
+          "description": "Only these kinds: overlap, clipped, text_overflow, duplicate_id\n(default: all).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/DiagnosticKind"
+          }
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "DiagnosticKind": {
+      "oneOf": [
+        {
+          "description": "Two interactive widgets cover the same pixels.",
+          "type": "string",
+          "const": "overlap"
+        },
+        {
+          "description": "A widget sticks out of its container or out of the window.",
+          "type": "string",
+          "const": "clipped"
+        },
+        {
+          "description": "A text needs more room than its widget was given.",
+          "type": "string",
+          "const": "text_overflow"
+        },
+        {
+          "description": "The same widget id on two different widgets of one window.",
+          "type": "string",
+          "const": "duplicate_id"
+        }
+      ]
+    },
+    "DiffParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "Baseline name (stored as `.iced-mcp/baselines/<name>.png`). Created\nfrom the current screen the first time.",
+          "type": "string"
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_mismatch": {
+          "description": "Fail (in flows) when more than this % of pixels differ (default 0.5).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "region": {
+          "description": "Or only this logical rectangle.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tolerance": {
+          "description": "Per-pixel colour tolerance, 0–1 of the largest difference (default 0.1).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "update": {
+          "description": "Overwrite the baseline with the current screen.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "baseline"
+      ]
+    },
+    "DragParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "button": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MouseButton"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dx": {
+          "description": "End point relative to the start.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "dy": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modifiers": {
+          "description": "Modifiers held during the drag, e.g. \"Shift\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "snapshot": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "steps": {
+          "description": "Intermediate moves, one per frame (default 12).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to_x": {
+          "description": "End point, absolute logical x (or use dx).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "to_y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "EchoParams": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "A note to print in the run report.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ]
+    },
+    "ExpectMessageParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contains": {
+          "description": "A message's Debug text must contain this (case-insensitive).",
+          "type": "string"
+        },
+        "since": {
+          "description": "Count only messages after this sequence number (default: the newest\nwhen the step starts, so earlier traffic cannot satisfy it).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timeout_ms": {
+          "description": "How long to wait for it, in ms (default 3000).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "contains"
+      ]
+    },
+    "ExpectParams": {
+      "description": "A structural assertion on one target. Give the target (`id`, `text`,\n`ref`, or `x`/`y`; `nth` for another match) and any of the checks; with\nnone, it checks that the target exists.",
+      "type": "object",
+      "properties": {
+        "above": {
+          "description": "Its bottom edge is at or above the other's top edge.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aligned_bottom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aligned_left": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aligned_right": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aligned_top": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "below": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "children": {
+          "description": "It has this many children, as `snapshot` lists them (hidden included).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "count": {
+          "description": "This many visible nodes match the target.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "enabled": {
+          "description": "Enabled: its reported state, else whether it shows an interactive cursor.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "exists": {
+          "description": "It is in the widget tree (visible or scrolled away), or not.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fits": {
+          "description": "Its text (or all text inside it) fits its widget, as measured by the bridge.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "focused": {
+          "description": "It has keyboard focus.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inside": {
+          "description": "Its box lies within the other's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "left_of": {
+          "description": "Its right edge is at or left of the other's left edge.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "right_of": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "same_column": {
+          "description": "Horizontal centres line up.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "same_row": {
+          "description": "Vertical centres line up.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Target"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text_contains": {
+          "description": "Its text contains this (case-insensitive).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text_equals": {
+          "description": "Its text is exactly this.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "description": "Keep checking until every check holds, up to this many ms (default\n2000; 0 checks once).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tolerance": {
+          "description": "Slack for the relations, in logical px (default 2).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "value": {
+          "description": "Its value is exactly this: a semantic node's value, a slider's number,\nan input's text (its placeholder when empty).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "visible": {
+          "description": "It is on screen (not scrolled or clipped out), or not.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "ExpectPixelParams": {
+      "description": "The colour of one pixel of a window screenshot.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "color": {
+          "description": "Expected colour: \"#rgb\", \"#rrggbb\" or \"#rrggbbaa\".",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Keep checking until it matches, up to this many ms (default 2000; 0 checks once).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tolerance": {
+          "description": "Largest difference allowed per channel, 0–255 (default 8).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x.",
+          "type": "number",
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "color"
+      ]
+    },
+    "ExpectQueryParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": true,
+        "contains": {
+          "description": "The answer's JSON text must contain this (case-insensitive).",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Keep asking until it does, up to this many ms (default 3000).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "contains"
+      ]
+    },
+    "FixtureParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "description": "Its arguments, as its description says."
+        },
+        "name": {
+          "description": "The fixture's name, from `fixtures`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
     "FlowLaunch": {
       "type": "object",
       "properties": {
@@ -81,17 +949,921 @@
       ]
     },
     "FlowStep": {
+      "description": "One step: `action` and its `args`, which are the parameters of the tool of that name (without `app`).",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "click"
+            },
+            "args": {
+              "$ref": "#/$defs/ClickParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "type_text"
+            },
+            "args": {
+              "$ref": "#/$defs/TypeParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "press_key"
+            },
+            "args": {
+              "$ref": "#/$defs/KeyParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "scroll"
+            },
+            "args": {
+              "$ref": "#/$defs/ScrollParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "drag"
+            },
+            "args": {
+              "$ref": "#/$defs/DragParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "hover"
+            },
+            "args": {
+              "$ref": "#/$defs/HoverParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "paste"
+            },
+            "args": {
+              "$ref": "#/$defs/PasteParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "wait_for"
+            },
+            "args": {
+              "$ref": "#/$defs/WaitParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "wait_idle"
+            },
+            "args": {
+              "$ref": "#/$defs/WaitIdleParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "sleep"
+            },
+            "args": {
+              "$ref": "#/$defs/SleepParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "run_app_action"
+            },
+            "args": {
+              "$ref": "#/$defs/AppActionParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "load_fixture"
+            },
+            "args": {
+              "$ref": "#/$defs/FixtureParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "expect_message"
+            },
+            "args": {
+              "$ref": "#/$defs/ExpectMessageParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "query"
+            },
+            "args": {
+              "$ref": "#/$defs/QueryParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "expect_query"
+            },
+            "args": {
+              "$ref": "#/$defs/ExpectQueryParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "screenshot_diff"
+            },
+            "args": {
+              "$ref": "#/$defs/DiffParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "expect_no_diagnostics"
+            },
+            "args": {
+              "$ref": "#/$defs/DiagnoseParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "expect"
+            },
+            "args": {
+              "$ref": "#/$defs/ExpectParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "expect_pixel"
+            },
+            "args": {
+              "$ref": "#/$defs/ExpectPixelParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "const": "echo"
+            },
+            "args": {
+              "$ref": "#/$defs/EchoParams"
+            }
+          },
+          "required": [
+            "action"
+          ]
+        }
+      ]
+    },
+    "HoverParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
       "type": "object",
       "properties": {
-        "action": {
-          "description": "One of [`STEP_ACTIONS`]; `args` are that tool's parameters.",
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "KeyParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keys": {
+          "description": "A key or chord: \"Enter\", \"Escape\", \"ArrowDown\", \"Ctrl+Shift+P\", \"Mod+S\" (Cmd on macOS, Ctrl elsewhere).",
           "type": "string"
         },
-        "args": true
+        "repeat": {
+          "description": "Press it this many times (default 1).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "snapshot": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
       "required": [
-        "action"
+        "keys"
       ]
+    },
+    "MouseButton": {
+      "type": "string",
+      "enum": [
+        "left",
+        "right",
+        "middle",
+        "back",
+        "forward"
+      ]
+    },
+    "PasteParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "QueryParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "description": "Its arguments, as its description says."
+        },
+        "max_chars": {
+          "description": "Cut the text form of the answer at this many characters (default 8000).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "name": {
+          "description": "The query's name, from `app_actions` (kind: query).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "Rect": {
+      "type": "object",
+      "properties": {
+        "height": {
+          "type": "number",
+          "format": "float"
+        },
+        "width": {
+          "type": "number",
+          "format": "float"
+        },
+        "x": {
+          "type": "number",
+          "format": "float"
+        },
+        "y": {
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ]
+    },
+    "ScrollParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dx": {
+          "description": "Positive scrolls right.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "dy": {
+          "description": "Positive scrolls down (content moves up).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "snapshot": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "description": "\"lines\" (default) or \"pixels\".",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScrollUnit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "ScrollUnit": {
+      "type": "string",
+      "enum": [
+        "lines",
+        "pixels"
+      ]
+    },
+    "SleepParams": {
+      "type": "object",
+      "properties": {
+        "ms": {
+          "description": "Milliseconds (at most 30000).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
+    "Target": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      }
+    },
+    "TypeParams": {
+      "description": "What to act on. Give one of `text`, `id`, `ref`, or `x` + `y`.",
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clear": {
+          "description": "Select all (Cmd/Ctrl+A) before typing, replacing what is there.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "exact": {
+          "description": "Match `text` exactly (case-sensitive, whole string).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A widget id the app set (`Id::new(\"…\")`), shown as `#id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nth": {
+          "description": "Which match when several do; 0 is the topmost, most specific.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "ref": {
+          "description": "A `[ref]` from the latest `snapshot` of this window.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "snapshot": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "submit": {
+          "description": "Press Enter afterwards.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "Visible text to match: case-insensitive substring unless `exact`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "description": "Logical x, for canvases and custom-drawn content.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        },
+        "y": {
+          "description": "Logical y.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "WaitIdleParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stable_ms": {
+          "description": "How long the screen must stay unchanged, in ms (default 300).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timeout_ms": {
+          "description": "Give up after this many ms (default 5000); not settling is reported, not an error.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "WaitParams": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "description": "Which connected app (its name from `status`); the default app when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exact": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gone": {
+          "description": "Wait for it to disappear instead.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Or a widget id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "Text to wait for (case-insensitive substring unless `exact`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "description": "Milliseconds (default 10000).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
     }
   }
 }

@@ -114,6 +114,8 @@ pub(crate) async fn run_step(app: &mut App, ctx: &Ctx, step: &Step) -> Result<St
             Ok(format!("slept {ms} ms"))
         }
         "expect_no_diagnostics" => expect_no_diagnostics(app, &args(&step.args)?).await,
+        "expect" => expect(app, &args(&step.args)?).await,
+        "expect_pixel" => expect_pixel(app, &args(&step.args)?).await,
         "echo" => Ok(args::<EchoParams>(&step.args)?.message),
         other => Err(format!(
             "unknown action `{other}`; one of {}",
@@ -2023,6 +2025,102 @@ pub(crate) async fn expect_no_diagnostics(
     } else {
         Err(text)
     }
+}
+
+/// Checks a target against fresh snapshots until every condition holds or
+/// the timeout passes; the error lists what was expected and found.
+pub(crate) async fn expect(app: &mut App, p: &ExpectParams) -> Result<String, String> {
+    let timeout = Duration::from_millis(p.timeout_ms.unwrap_or(2000).min(120_000));
+    let started = Instant::now();
+    loop {
+        let snapshot = take_snapshot(app, p.window.as_deref()).await?;
+        match crate::expect::evaluate(&snapshot, p) {
+            Ok(text) => return Ok(text),
+            Err(error) if started.elapsed() >= timeout => {
+                return Err(if timeout.is_zero() {
+                    error
+                } else {
+                    format!("{error}\n(still after {} ms)", timeout.as_millis())
+                })
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(150)).await,
+        }
+    }
+}
+
+/// Checks the colour of one logical point of the window.
+pub(crate) async fn expect_pixel(app: &mut App, p: &ExpectPixelParams) -> Result<String, String> {
+    let want = crate::expect::parse_color(&p.color)?;
+    let tolerance = p.tolerance.unwrap_or(8);
+    let timeout = Duration::from_millis(p.timeout_ms.unwrap_or(2000).min(120_000));
+    let started = Instant::now();
+    loop {
+        let got = pixel(app, p.window.as_deref(), p.x, p.y).await?;
+        let error = match crate::expect::same_color(got, want, tolerance) {
+            Ok(()) => {
+                return Ok(format!(
+                    "Pixel ({:.0},{:.0}) is {} (expected {} ± {tolerance}).",
+                    p.x,
+                    p.y,
+                    crate::expect::hex(got),
+                    crate::expect::hex(want)
+                ))
+            }
+            Err((channel, diff)) => format!(
+                "expected pixel ({:.0},{:.0}) to be {} ± {tolerance}, found {} ({} differs by {diff})",
+                p.x,
+                p.y,
+                crate::expect::hex(want),
+                crate::expect::hex(got),
+                ["red", "green", "blue", "alpha"][channel]
+            ),
+        };
+        if started.elapsed() >= timeout {
+            return Err(error);
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+/// The RGBA colour at a logical point, from a one-point screenshot.
+async fn pixel(app: &mut App, window: Option<&str>, x: f32, y: f32) -> Result<[u8; 4], String> {
+    let (width, height) = window_size(app, window).await?;
+    if x < 0.0 || y < 0.0 || x >= width || y >= height {
+        return Err(format!(
+            "({x:.0},{y:.0}) is outside the {width:.0}×{height:.0} window"
+        ));
+    }
+    let Response::Screenshot(shot) = request(
+        app,
+        Request::Screenshot(ScreenshotParams {
+            window: window.map(str::to_owned),
+            region: Some(Rect {
+                x: x.floor(),
+                y: y.floor(),
+                width: 1.0,
+                height: 1.0,
+            }),
+            max_width: Some(u32::MAX),
+        }),
+    )
+    .await?
+    else {
+        return Err("unexpected reply to screenshot".into());
+    };
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(&shot.png_base64)
+        .map_err(|e| format!("bad image from the app: {e}"))?;
+    let image = diff::decode(&png)?;
+    if image.width == 0 || image.height == 0 {
+        return Err("the app returned an empty image".into());
+    }
+    let (px, py) = (image.width / 2, image.height / 2);
+    let at = ((py * image.width + px) * 4) as usize;
+    image
+        .rgba
+        .get(at..at + 4)
+        .and_then(|p| <[u8; 4]>::try_from(p).ok())
+        .ok_or_else(|| "the image is too small".to_owned())
 }
 
 // --------------------------------------------------------------- app actions

@@ -148,6 +148,39 @@ pub(crate) fn outline(snapshot: &Snapshot, options: &OutlineOptions<'_>) -> Outl
     Outline { text, shown }
 }
 
+/// The nodes `snapshot` lists one level under `index` (hidden ones
+/// included): its descendants whose nearest listed ancestor it is. Layout
+/// boxes in between do not count, so a list's items are its children even
+/// when a column wraps them.
+pub(crate) fn outline_children(snapshot: &Snapshot, index: usize) -> Vec<&Node> {
+    let nodes = &snapshot.nodes;
+    let mut has_child = vec![false; nodes.len()];
+    for node in nodes {
+        if let Some(slot) = node.parent.and_then(|p| has_child.get_mut(p)) {
+            *slot = true;
+        }
+    }
+    let labels: Vec<Rect> = nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Label)
+        .filter_map(|n| n.visible)
+        .collect();
+    let keep: Vec<bool> = nodes
+        .iter()
+        .zip(&has_child)
+        .map(|(node, has_child)| kept(node, *has_child, true, &labels))
+        .collect();
+    nodes
+        .iter()
+        .filter(|node| node.index != index && keep[node.index])
+        .filter(|node| {
+            std::iter::successors(node.parent, |&p| nodes.get(p).and_then(|n| n.parent))
+                .find(|&p| keep.get(p).copied().unwrap_or(false) || p == index)
+                == Some(index)
+        })
+        .collect()
+}
+
 /// `[12] text "Save" #save-button (100,40 80×24) pointer`
 pub(crate) fn line(node: &Node) -> String {
     let kind = match (&node.kind, &node.role) {
@@ -228,14 +261,7 @@ pub(crate) fn find<'a>(snapshot: &'a Snapshot, selector: &Selector<'_>) -> Vec<&
         .nodes
         .iter()
         .filter(|node| node.visible.is_some())
-        .filter(|node| match selector {
-            Selector::Id(id) => node.id.as_deref() == Some(*id),
-            Selector::Text { text, exact: true } => node.text.as_deref() == Some(*text),
-            Selector::Text { text, exact: false } => node
-                .text
-                .as_deref()
-                .is_some_and(|t| t.to_lowercase().contains(&text.to_lowercase())),
-        })
+        .filter(|node| selects(node, selector))
         .collect();
     found.sort_by(|a, b| {
         let layer = |n: &Node| u8::from(n.layer == Layer::Base);
@@ -249,6 +275,18 @@ pub(crate) fn find<'a>(snapshot: &'a Snapshot, selector: &Selector<'_>) -> Vec<&
             .then(a.index.cmp(&b.index))
     });
     found
+}
+
+/// Whether `selector` names `node`, visible or not.
+pub(crate) fn selects(node: &Node, selector: &Selector<'_>) -> bool {
+    match selector {
+        Selector::Id(id) => node.id.as_deref() == Some(*id),
+        Selector::Text { text, exact: true } => node.text.as_deref() == Some(*text),
+        Selector::Text { text, exact: false } => node
+            .text
+            .as_deref()
+            .is_some_and(|t| t.to_lowercase().contains(&text.to_lowercase())),
+    }
 }
 
 fn area(node: &Node) -> f32 {

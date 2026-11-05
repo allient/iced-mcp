@@ -43,7 +43,10 @@ tooltip gets a name for free.
 `wait_idle`, `sleep`, `run_app_action`, `load_fixture`, `query`, `expect_query` (an assertion
 on a query's JSON), `expect_message` (an assertion that a message containing
 some text arrives), `screenshot_diff`, `expect_no_diagnostics` (an assertion
-that `diagnose` finds nothing, optionally of some `kinds`) and `echo`.
+that `diagnose` finds nothing, optionally of some `kinds`), `expect` and
+`expect_pixel` (see [Structural assertions](#structural-assertions)) and
+`echo`. `args` are the parameters of the tool of the same name; the flow
+schema spells them out per action.
 
 A snapshot looks like:
 
@@ -116,6 +119,52 @@ operation.custom(self.id.as_ref(), layout.bounds(), &mut ("iced-mcp/semantics@1"
   clean result is a diagnostic, not proof of complete widget coverage.
 - Describe what is visible, not the whole data set; the bridge keeps at most
   2000 nodes per widget.
+
+## Structural assertions
+
+Two steps (in `run_sequence`, `flow_add_step` and flow files) check the
+screen instead of acting on it. Each keeps checking until it holds or
+`timeout_ms` passes (default 2000; `0` checks once), and a failure says what
+was expected and what was found, one line per failed check.
+
+**`expect`** takes a target (`id`, `text` with `exact`, `ref`, or `x`/`y`;
+`nth` for another match) and any of:
+
+| Check | Holds when |
+|---|---|
+| `exists: bool` | the target is in the tree, visible or scrolled away (the default check when none is given) |
+| `visible: bool` | it is on screen, not scrolled or clipped out |
+| `enabled: bool` | its reported `disabled` state says so; for widgets that report none (most of iced's), whether it shows an interactive cursor — a button without `on_press` shows none |
+| `focused: bool` | it has keyboard focus |
+| `text_equals` · `text_contains` | its text is exactly / contains (case-insensitive) this |
+| `value` | a semantic node's value, a slider's number, or an input's text (its placeholder when empty: iced reports one or the other) |
+| `left_of` · `right_of` · `above` · `below` · `inside` · `same_row` · `same_column` · `aligned_left` · `aligned_right` · `aligned_top` · `aligned_bottom` | its box relates so to another target's (given like the target: `{"id": "save"}`), within `tolerance` px (default 2). `same_row`/`same_column` compare centres |
+| `fits: bool` | its text, or all the text inside it, fits its widget (the bridge's `text_fit`; see [Layout diagnostics](#layout-diagnostics)). Unmeasured text fails with "cannot tell" |
+| `children: n` | it has n children as `snapshot` lists them (layout boxes in between skipped, scrolled-out ones counted) |
+| `count: n` | n visible nodes match the target |
+
+```json
+{ "action": "expect", "args": { "text": "Save", "right_of": { "id": "name" }, "same_row": { "id": "name" },
+                                "enabled": true, "fits": true } }
+```
+
+```
+expected "Add" left_of #new-todo (tolerance 2 px), found its right edge at 994 and the other's left edge at 20 (974 px apart)
+expected #todo-list to have 5 child(ren), found 3: [13] text "milk" …; [14] text "eggs" …; [15] text "bread" …
+```
+
+**`expect_pixel {x, y, color, tolerance}`** reads one logical point of the
+window from a full-resolution screenshot and compares it with `color`
+(`#rgb`, `#rrggbb` or `#rrggbbaa`), allowing `tolerance` (0–255, default 8)
+per channel:
+
+```
+expected pixel (2,2) to be #000000 ± 8, found #ffffff (red differs by 255)
+```
+
+Prefer `expect` and `expect_query` to pixels: they survive theme and font
+changes. A pixel check is for what only colour shows (a status light, a
+selection highlight).
 
 ## Layout diagnostics
 

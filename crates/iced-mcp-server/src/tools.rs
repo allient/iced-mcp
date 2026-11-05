@@ -881,7 +881,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Run several steps in one call when you need not look in between: click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, load_fixture, query, expect_query, expect_message, screenshot_diff, expect_no_diagnostics, echo. Stops at the first failure.",
+        description = "Run several steps in one call when you need not look in between: click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, load_fixture, query, expect_query, expect_message, screenshot_diff, expect_no_diagnostics, echo, and the assertions expect (a target exists/visible/enabled/focused, text_equals/text_contains/value, left_of/right_of/above/below/inside/same_row/same_column/aligned_* another target within tolerance px, fits, children, count) and expect_pixel {x, y, color, tolerance}. Stops at the first failure.",
         annotations(open_world_hint = false)
     )]
     async fn run_sequence(&self, Parameters(p): Parameters<SequenceParams>) -> ToolResult {

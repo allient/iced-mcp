@@ -397,9 +397,9 @@ pub(crate) struct SequenceParams {
     /// Which connected app (its name from `status`); the default app when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) app: Option<String>,
-    /// Steps run in order. `action` is one of click, type_text, press_key,
-    /// scroll, drag, hover, wait_for, sleep; `args` are that tool's
-    /// parameters (sleep takes `ms`).
+    /// Steps run in order: an `action` and its `args`, that tool's
+    /// parameters (sleep takes `ms`; expect, expect_pixel and
+    /// expect_no_diagnostics are assertions).
     pub(crate) steps: Vec<Step>,
     /// Keep going after a failed step (default false).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,6 +411,7 @@ pub(crate) struct SequenceParams {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct Step {
+    #[schemars(schema_with = "crate::flow::action_schema")]
     pub(crate) action: String,
     #[serde(default)]
     pub(crate) args: serde_json::Value,
@@ -552,10 +553,8 @@ pub(crate) struct FlowStartParams {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct FlowStepParams {
-    /// One of click, type_text, press_key, scroll, drag, hover, paste,
-    /// wait_for, wait_idle, sleep, run_app_action, load_fixture, query,
-    /// expect_query, expect_message, screenshot_diff, expect_no_diagnostics,
-    /// echo.
+    /// The step's action, as in run_sequence.
+    #[schemars(schema_with = "crate::flow::action_schema")]
     pub(crate) action: String,
     /// That action's parameters, as its tool takes them.
     #[serde(default)]
@@ -672,4 +671,124 @@ pub(crate) struct FixtureParams {
     /// Its arguments, as its description says.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub(crate) args: serde_json::Value,
+}
+
+/// A structural assertion on one target. Give the target (`id`, `text`,
+/// `ref`, or `x`/`y`; `nth` for another match) and any of the checks; with
+/// none, it checks that the target exists.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct ExpectParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) window: Option<String>,
+    #[serde(flatten)]
+    pub(crate) target: Target,
+    /// It is in the widget tree (visible or scrolled away), or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exists: Option<bool>,
+    /// It is on screen (not scrolled or clipped out), or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) visible: Option<bool>,
+    /// Enabled: its reported state, else whether it shows an interactive cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) enabled: Option<bool>,
+    /// It has keyboard focus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) focused: Option<bool>,
+    /// Its text is exactly this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) text_equals: Option<String>,
+    /// Its text contains this (case-insensitive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) text_contains: Option<String>,
+    /// Its value is exactly this: a semantic node's value, a slider's number,
+    /// an input's text (its placeholder when empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) value: Option<String>,
+    /// Its text (or all text inside it) fits its widget, as measured by the bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fits: Option<bool>,
+    /// It has this many children, as `snapshot` lists them (hidden included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) children: Option<usize>,
+    /// This many visible nodes match the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) count: Option<usize>,
+    /// Its right edge is at or left of the other's left edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) left_of: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) right_of: Option<Target>,
+    /// Its bottom edge is at or above the other's top edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) above: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) below: Option<Target>,
+    /// Its box lies within the other's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) inside: Option<Target>,
+    /// Vertical centres line up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) same_row: Option<Target>,
+    /// Horizontal centres line up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) same_column: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aligned_left: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aligned_right: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aligned_top: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) aligned_bottom: Option<Target>,
+    /// Slack for the relations, in logical px (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tolerance: Option<f32>,
+    /// Keep checking until every check holds, up to this many ms (default
+    /// 2000; 0 checks once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout_ms: Option<u64>,
+}
+
+impl ExpectParams {
+    /// The geometric relations asked for, by name.
+    pub(crate) fn relations(&self) -> impl Iterator<Item = (&'static str, &Target)> {
+        [
+            ("left_of", &self.left_of),
+            ("right_of", &self.right_of),
+            ("above", &self.above),
+            ("below", &self.below),
+            ("inside", &self.inside),
+            ("same_row", &self.same_row),
+            ("same_column", &self.same_column),
+            ("aligned_left", &self.aligned_left),
+            ("aligned_right", &self.aligned_right),
+            ("aligned_top", &self.aligned_top),
+            ("aligned_bottom", &self.aligned_bottom),
+        ]
+        .into_iter()
+        .filter_map(|(name, target)| target.as_ref().map(|t| (name, t)))
+    }
+}
+
+/// The colour of one pixel of a window screenshot.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct ExpectPixelParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) window: Option<String>,
+    /// Logical x.
+    pub(crate) x: f32,
+    /// Logical y.
+    pub(crate) y: f32,
+    /// Expected colour: "#rgb", "#rrggbb" or "#rrggbbaa".
+    pub(crate) color: String,
+    /// Largest difference allowed per channel, 0–255 (default 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tolerance: Option<u8>,
+    /// Keep checking until it matches, up to this many ms (default 2000; 0 checks once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout_ms: Option<u64>,
 }

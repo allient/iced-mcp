@@ -30,6 +30,13 @@ All notable changes to iced-mcp. The three crates share one version.
   accessory app, no App Nap); `launch {background: false}` opts out.
   `ICED_MCP_BACKGROUND` asks for it; other platforms are documented, not
   handled.
+- **Structural assertions**: the `expect` step checks a target's presence,
+  visibility, enabled/focused state, text, value, geometry relative to
+  another target (`left_of`, `same_row`, `aligned_left`… within a
+  tolerance), text fit and child count; `expect_pixel` checks a pixel's
+  colour. Failures say what was expected and what was found.
+- The flow schema (`flow.v1.json`) now lists every step action with its
+  arguments, and `run_sequence`/`flow_add_step` take the same action names.
 
 ### Changed
 

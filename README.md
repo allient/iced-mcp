@@ -87,7 +87,7 @@ login form"*. It starts the app itself.
 | **Act** | `click`, `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `window`, all by id, text or position |
 | **Wait** | `wait_for` text or an id, `wait_idle` until the screen settles |
 | **Ask the app** | `messages`, `logs`, `state`, `query`, `run_app_action`, `perf` (frame, view and update timings), `clipboard`, `fixtures` and `load_fixture` (named starting states for tests) |
-| **Test** | `flow_start` → `flow_finish` → `flow_run`, `screenshot_diff`, `run_sequence`, screen recording; `iced-mcp run-suite` runs them all in CI and keeps a failure bundle (tree, diagnostics, screenshot, logs) per failure |
+| **Test** | `flow_start` → `flow_finish` → `flow_run`, `screenshot_diff`, `run_sequence`, screen recording; assertions (`expect` a widget visible, focused, left of another, its text fitting; `expect_pixel`); `iced-mcp run-suite` runs them all in CI and keeps a failure bundle (tree, diagnostics, screenshot, logs) per failure |
 | **Sessions** | `launch` (in the background: it doesn't steal your keyboard focus on macOS), `connect`, `restart`, several apps at once |
 
 A snapshot reads like this:

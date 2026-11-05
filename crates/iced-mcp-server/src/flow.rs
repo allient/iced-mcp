@@ -67,12 +67,95 @@ pub(crate) struct FlowLaunch {
     pub(crate) background: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// One step: an action from [`STEP_ACTIONS`] and its arguments, which are
+/// that tool's parameters. The schema (`flow.v1.json`) spells out each
+/// action's arguments, from [`step_args`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FlowStep {
-    /// One of [`STEP_ACTIONS`]; `args` are that tool's parameters.
     pub(crate) action: String,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub(crate) args: serde_json::Value,
+}
+
+impl schemars::JsonSchema for FlowStep {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "FlowStep".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let variants: Vec<serde_json::Value> = step_args(generator)
+            .into_iter()
+            .map(|(action, args)| {
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "action": { "const": action },
+                        "args": args,
+                    },
+                    "required": ["action"],
+                })
+            })
+            .collect();
+        schemars::json_schema!({
+            "description": "One step: `action` and its `args`, which are the parameters of the tool of that name (without `app`).",
+            "oneOf": variants,
+        })
+    }
+}
+
+/// Each step action with the schema of its arguments: the one vocabulary of
+/// `run_sequence`, `flow_add_step` and flow files.
+pub(crate) fn step_args(
+    generator: &mut schemars::SchemaGenerator,
+) -> Vec<(&'static str, schemars::Schema)> {
+    use crate::params::*;
+    vec![
+        ("click", generator.subschema_for::<ClickParams>()),
+        ("type_text", generator.subschema_for::<TypeParams>()),
+        ("press_key", generator.subschema_for::<KeyParams>()),
+        ("scroll", generator.subschema_for::<ScrollParams>()),
+        ("drag", generator.subschema_for::<DragParams>()),
+        ("hover", generator.subschema_for::<HoverParams>()),
+        ("paste", generator.subschema_for::<PasteParams>()),
+        ("wait_for", generator.subschema_for::<WaitParams>()),
+        ("wait_idle", generator.subschema_for::<WaitIdleParams>()),
+        ("sleep", generator.subschema_for::<SleepParams>()),
+        (
+            "run_app_action",
+            generator.subschema_for::<AppActionParams>(),
+        ),
+        ("load_fixture", generator.subschema_for::<FixtureParams>()),
+        (
+            "expect_message",
+            generator.subschema_for::<ExpectMessageParams>(),
+        ),
+        ("query", generator.subschema_for::<QueryParams>()),
+        (
+            "expect_query",
+            generator.subschema_for::<ExpectQueryParams>(),
+        ),
+        ("screenshot_diff", generator.subschema_for::<DiffParams>()),
+        (
+            "expect_no_diagnostics",
+            generator.subschema_for::<DiagnoseParams>(),
+        ),
+        ("expect", generator.subschema_for::<ExpectParams>()),
+        (
+            "expect_pixel",
+            generator.subschema_for::<ExpectPixelParams>(),
+        ),
+        ("echo", generator.subschema_for::<EchoParams>()),
+    ]
+}
+
+/// The schema of a step's `action` in tool parameters: one of
+/// [`STEP_ACTIONS`].
+pub(crate) fn action_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "enum": STEP_ACTIONS,
+        "description": "The step's action; `args` are the parameters of the tool of the same name (expect, expect_pixel and expect_no_diagnostics are steps only: see the guide).",
+    })
 }
 
 /// The actions a flow (and `run_sequence`) may contain.
@@ -94,6 +177,8 @@ pub(crate) const STEP_ACTIONS: &[&str] = &[
     "expect_query",
     "screenshot_diff",
     "expect_no_diagnostics",
+    "expect",
+    "expect_pixel",
     "echo",
 ];
 
@@ -267,6 +352,20 @@ mod tests {
             committed, generated,
             "flow schema changed: regenerate with ICED_MCP_UPDATE_SCHEMA=1"
         );
+    }
+
+    #[test]
+    fn the_schema_and_the_runner_share_one_vocabulary() {
+        let mut generator = schemars::SchemaGenerator::default();
+        let names: Vec<&str> = step_args(&mut generator)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, STEP_ACTIONS);
+        let schema = serde_json::to_value(schemars::schema_for!(Flow)).unwrap();
+        let steps = &schema["$defs"]["FlowStep"]["oneOf"];
+        assert_eq!(steps.as_array().map(Vec::len), Some(STEP_ACTIONS.len()));
+        assert_eq!(steps[0]["properties"]["action"]["const"], "click");
     }
 
     #[test]

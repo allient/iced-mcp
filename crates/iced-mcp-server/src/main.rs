@@ -9,6 +9,7 @@ mod bundle;
 mod conn;
 mod diagnose;
 mod diff;
+mod expect;
 mod flow;
 mod keys;
 mod ops;
