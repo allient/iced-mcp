@@ -314,8 +314,8 @@ impl Server {
             Err(error) => return (2, error),
         };
         script.update_baselines = options.update_baselines;
-        if let Some(ms) = options.timeout_ms {
-            script.timeout = Duration::from_millis(ms).min(crate::script::MAX_TIMEOUT);
+        if let Err(error) = script.resolve_timeout(options.timeout_ms, None) {
+            return (1, format!("FAIL {} — {error}", script.name));
         }
         // Type errors are reported before an app is even started.
         let typecheck = match crate::script::precheck(&script).await {
@@ -1008,8 +1008,8 @@ impl Server {
         };
         let mut script = crate::script::Script::new("script", p.source);
         script.app = p.app;
-        if let Some(ms) = p.timeout_ms {
-            script.timeout = Duration::from_millis(ms).min(crate::script::MAX_TIMEOUT);
+        if let Err(error) = script.resolve_timeout(p.timeout_ms, None) {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(error)]));
         }
         // rmcp cancels the request's token but keeps polling this future:
         // the script watches the token itself.

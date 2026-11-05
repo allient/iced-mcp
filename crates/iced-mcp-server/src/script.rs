@@ -147,6 +147,25 @@ impl Script {
 }
 
 impl Script {
+    /// Sets the deadline: a per-run `explicit` one (`script_eval
+    /// {timeout_ms}`, `run-script --timeout-ms`) wins, then the script's own
+    /// `--! timeout_ms=N` directive, then `fallback` (`run-suite
+    /// --timeout-ms`), then [`DEFAULT_TIMEOUT`]; never above [`MAX_TIMEOUT`].
+    /// Fails on a malformed directive.
+    pub(crate) fn resolve_timeout(
+        &mut self,
+        explicit: Option<u64>,
+        fallback: Option<u64>,
+    ) -> Result<(), String> {
+        let directive = timeout_directive(&self.source)
+            .map_err(|(line, error)| format!("{}:{line}: {error}", self.name))?;
+        let ms = explicit.or(directive).or(fallback);
+        self.timeout = ms
+            .map_or(DEFAULT_TIMEOUT, Duration::from_millis)
+            .min(MAX_TIMEOUT);
+        Ok(())
+    }
+
     /// A script from a `.luau` file, named after the file.
     pub(crate) fn from_file(path: &Path) -> Result<Self, String> {
         let source = std::fs::read_to_string(path)
@@ -164,7 +183,8 @@ pub(crate) const USAGE: &str = "\
 iced-mcp run-script FILE      run a Luau script (see `script_api` / iced-mcp.d.luau)
     --launch CMD              start CMD and run the script on it (`app`), stop it after
     --root DIR                project root holding .iced-mcp/ (default: current dir)
-    --timeout-ms N            wall-clock limit (default 60000)
+    --timeout-ms N            wall-clock limit in ms (default: the script's
+                              `--! timeout_ms=N` line, else 60000; at most 1800000)
     --update-baselines        rewrite screenshot_diff baselines from this run
 Type-checked first with luau-analyze when it is on PATH (or ICED_MCP_LUAU_ANALYZE).
 Exit status: 0 when the script finished, 1 when it failed (an error, a failed step,
@@ -207,6 +227,47 @@ pub(crate) fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
     }
     options.file = file.ok_or("give the script file: iced-mcp run-script FILE")?;
     Ok(options)
+}
+
+/// The `--! timeout_ms=N` directive in the script's leading comments (the
+/// lines before its first code), if any; `(line, error)` when malformed.
+/// Other `--!` lines (`--!nonstrict`, `--!nocheck`) are Luau's own.
+pub(crate) fn timeout_directive(source: &str) -> Result<Option<u64>, (usize, String)> {
+    let mut found = None;
+    for (index, line) in source.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with("--") {
+            break;
+        }
+        let Some(rest) = line.strip_prefix("--!") else {
+            continue;
+        };
+        let Some((key, value)) = rest.split_once('=') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        if key != "timeout_ms" {
+            return Err((
+                index + 1,
+                format!("unknown directive `--! {key}=…` (known: timeout_ms)"),
+            ));
+        }
+        let ms = value
+            .parse::<u64>()
+            .ok()
+            .filter(|ms| *ms > 0)
+            .ok_or_else(|| {
+                (
+                    index + 1,
+                    format!("`--! timeout_ms={value}` needs a positive number of milliseconds"),
+                )
+            })?;
+        found = Some(ms);
+    }
+    Ok(found)
 }
 
 /// One app call the script made.
@@ -1653,6 +1714,63 @@ mod tests {
         assert!(out.ok, "{:?}", out.error);
         assert!(out.output.ends_with("… output cut at 65536 bytes"));
         assert!(out.output.len() < 70_000);
+    }
+
+    #[test]
+    fn the_deadline_comes_from_the_call_the_directive_or_the_suite() {
+        let resolved = |source: &str, explicit, fallback| {
+            let mut script = Script::new("t.luau", source);
+            script
+                .resolve_timeout(explicit, fallback)
+                .map(|()| script.timeout)
+        };
+        let ms = Duration::from_millis;
+        assert_eq!(resolved("return 1", None, None), Ok(DEFAULT_TIMEOUT));
+        assert_eq!(resolved("return 1", None, Some(500)), Ok(ms(500)));
+        let with = "--!nonstrict\n-- slow: imports a year\n--! timeout_ms=300000\nreturn 1";
+        assert_eq!(
+            resolved(with, None, Some(500)),
+            Ok(ms(300_000)),
+            "the directive beats the suite"
+        );
+        assert_eq!(
+            resolved(with, Some(700), Some(500)),
+            Ok(ms(700)),
+            "the call beats the directive"
+        );
+        assert_eq!(
+            resolved("--! timeout_ms=99999999\n", None, None),
+            Ok(MAX_TIMEOUT)
+        );
+        assert_eq!(resolved("--!timeout_ms = 250\n", None, None), Ok(ms(250)));
+        // Only the leading comments count.
+        assert_eq!(
+            resolved("return 1\n--! timeout_ms=5\n", None, None),
+            Ok(DEFAULT_TIMEOUT)
+        );
+        assert_eq!(
+            resolved("\n--! timeout_ms=soon\n", None, None),
+            Err("t.luau:2: `--! timeout_ms=soon` needs a positive number of milliseconds".into())
+        );
+        assert_eq!(
+            resolved("--! timeout=5\n", None, None),
+            Err("t.luau:1: unknown directive `--! timeout=…` (known: timeout_ms)".into())
+        );
+    }
+
+    /// The directive's deadline is the one the running script gets.
+    #[test]
+    fn a_directive_deadline_stops_the_script() {
+        let mut script = script("--! timeout_ms=200\nwhile true do end");
+        script.resolve_timeout(None, Some(60_000)).unwrap();
+        let out = sandbox_run_with(script);
+        assert!(
+            out.error
+                .unwrap()
+                .message
+                .contains("timed out after 200 ms"),
+            "the directive's deadline applies"
+        );
     }
 
     #[test]

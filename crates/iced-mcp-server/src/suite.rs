@@ -33,6 +33,8 @@ iced-mcp run-suite            run every flow in .iced-mcp/flows/ and script in
     --update-baselines        rewrite screenshot_diff baselines from this run
     --launch CMD              start CMD once and run fragments (flows without launch) and scripts on it
     --prerequisite-ok         confirm the prerequisites of fragments hold
+    --timeout-ms N            each script's deadline in ms (default 60000, at most
+                              1800000); a script's `--! timeout_ms=N` line overrides it
 Exit status: 0 when everything passed, 1 otherwise, 2 on bad arguments or nothing to run.";
 
 /// The suite's options, from the command line.
@@ -47,6 +49,8 @@ pub(crate) struct Options {
     pub(crate) update_baselines: bool,
     pub(crate) launch: Option<String>,
     pub(crate) prerequisite_ok: bool,
+    /// Every script's deadline, unless its `--! timeout_ms=N` says otherwise.
+    pub(crate) timeout_ms: Option<u64>,
 }
 
 pub(crate) fn parse(args: &[String]) -> Result<Options, String> {
@@ -78,6 +82,9 @@ pub(crate) fn parse(args: &[String]) -> Result<Options, String> {
             "--update-baselines" => options.update_baselines = true,
             "--launch" => options.launch = Some(value("--launch")?),
             "--prerequisite-ok" => options.prerequisite_ok = true,
+            "--timeout-ms" => {
+                options.timeout_ms = Some(u64::from(count("--timeout-ms", value("--timeout-ms")?)?))
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -277,7 +284,11 @@ pub(crate) async fn run(apps: &Arc<Mutex<Apps>>, options: &Options) -> (i32, Str
                 }
                 Item::Script(name) => {
                     let path = scripts_dir(&root).join(format!("{name}.luau"));
-                    match script::Script::from_file(&path) {
+                    let prepared = script::Script::from_file(&path).and_then(|mut script| {
+                        script.resolve_timeout(None, options.timeout_ms)?;
+                        Ok(script)
+                    });
+                    match prepared {
                         Ok(mut script) => {
                             script.app = app;
                             script.update_baselines = options.update_baselines;
@@ -408,6 +419,13 @@ mod tests {
         assert!(parse(&args("--repeat 0")).is_err());
         assert!(parse(&args("--repeat")).is_err());
         assert!(parse(&args("--bogus")).is_err());
+        assert_eq!(
+            parse(&args("--timeout-ms 500")).unwrap().timeout_ms,
+            Some(500)
+        );
+        assert_eq!(parse(&[]).unwrap().timeout_ms, None);
+        assert!(parse(&args("--timeout-ms 0")).is_err());
+        assert!(parse(&args("--timeout-ms soon")).is_err());
     }
 
     #[test]

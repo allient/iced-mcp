@@ -9,6 +9,9 @@
 -- step raises a Lua error with the step's own message, prefixed with the
 -- script line: `script:7: nothing visible matches #save…`. Catch it with
 -- `pcall` when a failure is expected.
+--
+-- A script sets its own deadline (default 60 s, at most 30 min) with a line
+-- among its leading comments: `--! timeout_ms=300000`.
 
 -- What to act on (the same fields are inline in each *Args type): one of `id`, `text`, `ref` (from `snapshot`/`find`), or `x` + `y`.
 export type Target = {

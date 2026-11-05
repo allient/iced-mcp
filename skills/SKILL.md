@@ -43,7 +43,9 @@ in reply. Full reference: `docs/guide.md`.
   failure bundle; `pcall` it only when failing is an expected answer.
 - Save a script as `.iced-mcp/scripts/<name>.luau` to make it a test:
   `iced-mcp run-suite --launch CMD` runs it with the flows. Start it with
-  `app:load_fixture(…)`.
+  `app:load_fixture(…)`. Scripts get 60 s by default: `run-suite
+  --timeout-ms N` for all, or `--! timeout_ms=300000` in a script's first
+  comments for one.
 
 ## Tests
 

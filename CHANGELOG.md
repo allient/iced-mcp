@@ -2,6 +2,18 @@
 
 All notable changes to iced-mcp. The three crates share one version.
 
+## 0.3.1 — 2026-11-04
+
+### Added
+
+- `iced-mcp run-suite --timeout-ms N` sets every script's deadline (it was
+  always 60 s); flows are unchanged.
+- A script can set its own deadline with a line among its leading
+  comments, `--! timeout_ms=300000`, honoured by `run-suite`, `run-script`
+  and `script_eval`. A per-call `timeout_ms` / `run-script --timeout-ms`
+  beats it, and it beats the suite's flag; the cap stays 30 min. A
+  malformed or unknown `--! key=value` line fails the script with its line.
+
 ## 0.3.0 — 2026-11-04
 
 ### Added

@@ -257,6 +257,7 @@ flow and a summary:
 ```sh
 iced-mcp run-suite [--root DIR] [--only GLOB]… [--repeat N | --until-fail N]
                    [--fail-fast] [--update-baselines] [--launch CMD] [--prerequisite-ok]
+                   [--timeout-ms N]
 # PASS add-todo (2.1s)
 # FAIL broken (0.7s) — [2] ✗ wait_for "never there" (0.5s) — never appeared …
 #     bundle: .iced-mcp/failures/broken-20261104-192124-371
@@ -269,7 +270,19 @@ times; `--until-fail N` runs it up to N times and stops after the first round
 with a failure (for hunting flaky flows). End-to-end flows launch their own
 app. Fragments (no `launch`) need one: `--launch CMD` starts it once, runs
 every fragment on it and relaunches it if it dies; give each fragment a
-`fixture` so it does not depend on what ran before it.
+`fixture` so it does not depend on what ran before it. Scripts in
+`.iced-mcp/scripts/` run after the flows, on that app too (see
+[Scripts](#scripts)); `--timeout-ms N` sets their deadline (default 60 s), and
+a script that needs longer says so in its first comments:
+
+```lua
+--! timeout_ms=300000
+-- imports a year of data before checking the chart
+app:load_fixture("one-year")
+```
+
+Flows have no overall deadline (each step has its own `timeout_ms`), so the
+flag does not change them.
 
 **Failure bundles.** When a step fails (in `flow_run`, `run-flow` or
 `run-suite`), the run captures the app while it is still up into
@@ -410,8 +423,12 @@ and libraries read-only) with only `coroutine`, `table`, `string`, `utf8`,
 out is `app` and `apps`, whose file writes stay under `.iced-mcp/`
 (baselines, screenshots, failure bundles). Limits:
 
-- a wall-clock deadline: 60 s by default (`timeout_ms` up to 30 min,
-  `--timeout-ms` on the CLI). Luau checks it at every loop iteration and
+- a wall-clock deadline: 60 s by default, at most 30 min. Set it per call
+  (`script_eval {timeout_ms}`, `run-script --timeout-ms`), for a whole suite
+  (`run-suite --timeout-ms`), or in the script itself with a line among its
+  leading comments: `--! timeout_ms=300000`. A per-call value beats the
+  script's line, which beats the suite's (a malformed `--!` line fails the
+  script with its line number). Luau checks it at every loop iteration and
   call, and every app call is cut at it. A built-in that never returns to
   the interpreter (a plain `string.find` of a 2 MiB needle in a 4 MiB
   string, a backtracking pattern) cannot be stopped from inside, so the
@@ -445,7 +462,9 @@ iced-mcp run-script FILE [--launch CMD] [--root DIR] [--timeout-ms N] [--update-
 runs `.iced-mcp/scripts/*.luau` after the flows, like fragments: on the app
 `--launch` starts, one line each (`PASS add-three.luau (1.3s)`), with
 `--only` (matching the name without `.luau`), `--repeat`, `--until-fail`,
-`--fail-fast`, `--update-baselines` and failure bundles. A script sets up
+`--fail-fast`, `--update-baselines`, `--timeout-ms` (every script's
+deadline; a script's own `--! timeout_ms=N` line wins) and failure bundles.
+A script sets up
 its own state (`app:load_fixture(…)` first). The repository's
 [`examples/todos/.iced-mcp/scripts`](../examples/todos/.iced-mcp/scripts)
 holds three for the todos example:
