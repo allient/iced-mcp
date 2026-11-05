@@ -115,6 +115,10 @@ iced_mcp::attach(app)
     .run()
 ```
 
+**Agents:** [`skills/SKILL.md`](https://github.com/allient/iced-mcp/blob/main/skills/SKILL.md)
+is a short skill on using iced-mcp well (launch, target by id, fixtures,
+`expect`, the suite, failure bundles); drop it into your agent's skills.
+
 **[Read the guide →](https://github.com/allient/iced-mcp/blob/main/docs/guide.md)** for every tool, naming icon-only buttons,
 describing custom-drawn widgets, running flows in CI, how it works, security
 and limits.

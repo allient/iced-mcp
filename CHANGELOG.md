@@ -37,6 +37,7 @@ All notable changes to iced-mcp. The three crates share one version.
   colour. Failures say what was expected and what was found.
 - The flow schema (`flow.v1.json`) now lists every step action with its
   arguments, and `run_sequence`/`flow_add_step` take the same action names.
+- `skills/SKILL.md`: an agent skill on using iced-mcp well.
 
 ### Changed
 
