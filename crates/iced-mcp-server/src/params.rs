@@ -410,6 +410,24 @@ pub(crate) struct SequenceParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct ScriptEvalParams {
+    /// The Luau script. Globals: `app` (the app below), `apps["name"]`
+    /// (any connected app) and `print`. Methods mirror the steps:
+    /// `app:click{ id = "save" }`, `app:wait_for("Saved")`,
+    /// `app:expect{ id = "total", text_contains = "3" }`,
+    /// `app:query("items")`, `app:find_all{ role = "text" }`… The whole
+    /// typed API: `script_api`. `return` a value to get it back as JSON.
+    pub(crate) source: String,
+    /// Which connected app `app` means (its name from `status`); the default
+    /// app when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app: Option<String>,
+    /// Wall-clock limit in ms (default 60000, at most 1800000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct Step {
     #[schemars(schema_with = "crate::flow::action_schema")]
     pub(crate) action: String,

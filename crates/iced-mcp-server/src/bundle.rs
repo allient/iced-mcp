@@ -10,7 +10,7 @@
 //! | `screenshot.png` | the window at failure |
 //! | `messages.log` | the app's recent messages |
 //! | `app-output.log` | the app's last stdout/stderr (apps launched by the server) |
-//! | `flow.json` | the flow that ran |
+//! | `flow.json` · `script.luau` | the flow or script that ran |
 //!
 //! Capturing is best effort: an app that crashed has no screenshot, so
 //! `<file>.error.txt` says why instead, and the bundle is still written.
@@ -37,13 +37,19 @@ pub(crate) struct Failure<'a> {
     pub(crate) error: &'a str,
 }
 
+/// What ran: a flow (saved as `flow.json`) or a script (`script.luau`).
+pub(crate) enum Source<'a> {
+    Flow(&'a Flow),
+    Script(&'a str),
+}
+
 /// Captures the app's state at a failure into a new bundle directory and
 /// returns its path. `app` is `None` when there is none to ask (the launch
 /// failed).
 pub(crate) async fn write(
     root: &Path,
     failure: &Failure<'_>,
-    flow: &Flow,
+    source: Source<'_>,
     app: Option<&mut App>,
 ) -> Result<PathBuf, String> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
@@ -57,14 +63,23 @@ pub(crate) async fn write(
         Err(error) => save(&format!("{name}.error.txt"), error.as_bytes()),
     };
 
+    let what = match source {
+        Source::Flow(_) => "flow",
+        Source::Script(_) => "script",
+    };
     let mut summary = format!(
-        "flow: {}\nstep: {}\nwhen: {}\n",
+        "{what}: {}\nstep: {}\nwhen: {}\n",
         failure.flow,
         failure.step,
         chrono::Local::now().to_rfc3339()
     );
-    if let Ok(text) = serde_json::to_string_pretty(flow) {
-        save("flow.json", text.as_bytes());
+    match source {
+        Source::Flow(flow) => {
+            if let Ok(text) = serde_json::to_string_pretty(flow) {
+                save("flow.json", text.as_bytes());
+            }
+        }
+        Source::Script(text) => save("script.luau", text.as_bytes()),
     }
 
     match app {

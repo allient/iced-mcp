@@ -15,6 +15,7 @@ mod keys;
 mod ops;
 mod params;
 mod record;
+mod script;
 mod suite;
 mod tools;
 mod view;
@@ -31,11 +32,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().map(String::as_str) == Some("run-flow") {
         std::process::exit(run_flow(&args[1..]).await);
     }
+    if args.first().map(String::as_str) == Some("run-script") {
+        std::process::exit(run_script(&args[1..]).await);
+    }
     if args.first().map(String::as_str) == Some("run-suite") {
         std::process::exit(run_suite(&args[1..]).await);
     }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("{USAGE}{}", suite::USAGE);
+        println!("{USAGE}{}\n\n{}", script::USAGE, suite::USAGE);
         return Ok(());
     }
     // stdout is the MCP channel: diagnostics go to stderr only.
@@ -52,6 +56,24 @@ iced-mcp run-flow [NAME]      replay .iced-mcp/flows/NAME.json; no NAME lists th
     --prerequisite-ok         confirm a fragment's prerequisite holds
 Exit status: 0 when every step passed, 1 otherwise, 2 on bad arguments.
 ";
+
+/// `iced-mcp run-script`: one Luau script, for CI and the shell.
+async fn run_script(args: &[String]) -> i32 {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("{}", script::USAGE);
+        return 0;
+    }
+    let options = match script::parse_cli(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}\n\n{}", script::USAGE);
+            return 2;
+        }
+    };
+    let (code, report) = tools::Server::new().run_script_cli(&options).await;
+    println!("{report}");
+    code
+}
 
 /// `iced-mcp run-suite`: every flow (or `--only` some), for CI.
 async fn run_suite(args: &[String]) -> i32 {

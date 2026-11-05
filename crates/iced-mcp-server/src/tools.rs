@@ -151,7 +151,7 @@ impl Apps {
     }
 
     /// The app a tool means: the one named, else the only one, else the default.
-    fn get(&mut self, name: Option<&str>) -> Result<&mut App, String> {
+    pub(crate) fn get(&mut self, name: Option<&str>) -> Result<&mut App, String> {
         let index = match name {
             Some(name) => self.list.iter().position(|a| a.name == name).ok_or_else(|| {
                 format!("no app named `{name}`; connected: {}", self.names())
@@ -293,8 +293,55 @@ impl Server {
 
     /// `iced-mcp run-suite`: the exit status and the report.
     pub(crate) async fn run_suite_cli(&self, options: &crate::suite::Options) -> (i32, String) {
-        let mut apps = self.apps.lock().await;
-        crate::suite::run(&mut apps, options).await
+        crate::suite::run(&self.apps, options).await
+    }
+
+    /// `iced-mcp run-script`: runs a `.luau` file, on an app it launches
+    /// when given `launch`. The exit status (0 pass, 1 fail, 2 unreadable)
+    /// and the report.
+    pub(crate) async fn run_script_cli(
+        &self,
+        options: &crate::script::CliOptions,
+    ) -> (i32, String) {
+        if let Some(root) = &options.root {
+            self.apps.lock().await.set_root(root.clone());
+        }
+        let mut script = match crate::script::Script::from_file(&options.file) {
+            Ok(script) => script,
+            Err(error) => return (2, error),
+        };
+        script.update_baselines = options.update_baselines;
+        if let Some(ms) = options.timeout_ms {
+            script.timeout = Duration::from_millis(ms).min(crate::script::MAX_TIMEOUT);
+        }
+        // Type errors are reported before an app is even started.
+        let typecheck = match crate::script::precheck(&script).await {
+            Ok(typecheck) => typecheck,
+            Err(failed) => return (1, failed.render(&script.name)),
+        };
+        const APP: &str = "script";
+        if let Some(command) = &options.launch {
+            let launch = FlowLaunch {
+                command: command.clone(),
+                cwd: None,
+                env: Default::default(),
+                background: None,
+            };
+            let launched = self
+                .apps
+                .lock()
+                .await
+                .launch_named(APP, launch, Duration::from_secs(300))
+                .await;
+            if let Err(error) = launched {
+                return (1, format!("FAIL {} — launch failed: {error}", script.name));
+            }
+            script.app = Some(APP.to_owned());
+        }
+        let name = script.name.clone();
+        let outcome = crate::script::run_checked(self.apps.clone(), script, typecheck).await;
+        self.apps.lock().await.drop_app(APP).await;
+        (i32::from(!outcome.ok), outcome.render(&name))
     }
 }
 
@@ -940,6 +987,38 @@ impl Server {
         Self::reply(&apps, outcome)
     }
 
+    #[tool(
+        description = "Run a Luau script that drives the apps in one round trip: set up, act, check and report with variables, loops and conditions instead of many tool calls. `app` is the default app (or `app` below), `apps[\"name\"]` any other; methods mirror the steps (click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, query, load_fixture, expect, expect_pixel, expect_no_diagnostics, expect_message, expect_query, diagnose, snapshot, find, find_all, screenshot, screenshot_diff, messages, state, logs) and take their arguments as a table. A failing step raises its own message with the script line. Sandboxed: no files, network or OS; 60 s and 64 MiB by default. Type-checked first with luau-analyze when installed. Returns the printed output, the return value as JSON, the steps and the duration; on failure the error, its line and a failure bundle. Typed API: `script_api`.",
+        annotations(open_world_hint = false)
+    )]
+    async fn script_eval(&self, Parameters(p): Parameters<ScriptEvalParams>) -> ToolResult {
+        let mut script = crate::script::Script::new("script", p.source);
+        script.app = p.app;
+        if let Some(ms) = p.timeout_ms {
+            script.timeout = Duration::from_millis(ms).min(crate::script::MAX_TIMEOUT);
+        }
+        let outcome = crate::script::run(self.apps.clone(), script).await;
+        let text = outcome.render("script");
+        let value = serde_json::to_value(&outcome).unwrap_or_default();
+        let mut result = if outcome.ok {
+            CallToolResult::structured(value)
+        } else {
+            CallToolResult::structured_error(value)
+        };
+        result.content = vec![ContentBlock::text(text)];
+        Ok(result)
+    }
+
+    #[tool(
+        description = "The typed API of scripts (`script_eval`, `iced-mcp run-script`) as a Luau definition file, `iced-mcp.d.luau`: every `app` method with its argument and return types.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn script_api(&self) -> ToolResult {
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            crate::script::API,
+        )]))
+    }
+
     // ---------------------------------------------------------- the app's side
 
     #[tool(
@@ -1421,7 +1500,9 @@ pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
                         step: "launch",
                         error: &error,
                     };
-                    let path = bundle::write(&root, &failure, &loaded, None).await.ok();
+                    let path = bundle::write(&root, &failure, bundle::Source::Flow(&loaded), None)
+                        .await
+                        .ok();
                     return FlowRun::failed(error, path);
                 }
             }
@@ -1467,9 +1548,14 @@ pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
                 step: "fixture",
                 error: &error,
             };
-            let path = bundle::write(&root, &failure, &loaded, apps.get(Some(&app_name)).ok())
-                .await
-                .ok();
+            let path = bundle::write(
+                &root,
+                &failure,
+                bundle::Source::Flow(&loaded),
+                apps.get(Some(&app_name)).ok(),
+            )
+            .await
+            .ok();
             return FlowRun::failed(error, path);
         }
     }
@@ -1525,10 +1611,14 @@ pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
                     step: &format!("[{}] {label}", index + 1),
                     error: &error,
                 };
-                bundle_path =
-                    bundle::write(&root, &failure, &loaded, apps.get(Some(&app_name)).ok())
-                        .await
-                        .ok();
+                bundle_path = bundle::write(
+                    &root,
+                    &failure,
+                    bundle::Source::Flow(&loaded),
+                    apps.get(Some(&app_name)).ok(),
+                )
+                .await
+                .ok();
                 (
                     if infrastructure {
                         StepStatus::Error
