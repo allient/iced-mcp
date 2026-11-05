@@ -2,7 +2,7 @@
 
 All notable changes to iced-mcp. The three crates share one version.
 
-## Unreleased
+## 0.2.0 — 2026-11-04
 
 ### Added
 

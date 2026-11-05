@@ -55,7 +55,7 @@ cargo install iced-mcp-server
 
 ```toml
 [dependencies]
-iced-mcp = { version = "0.1", optional = true }
+iced-mcp = { version = "0.2", optional = true }
 
 [features]
 agent = ["dep:iced-mcp"]   # left out of release builds
