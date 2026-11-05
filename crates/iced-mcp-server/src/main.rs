@@ -6,6 +6,7 @@
 
 mod accessibility;
 mod conn;
+mod diagnose;
 mod diff;
 mod flow;
 mod keys;

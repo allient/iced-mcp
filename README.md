@@ -83,7 +83,7 @@ login form"*. It starts the app itself.
 
 | | |
 |---|---|
-| **Look** | `snapshot` (what's on screen, with ids, text and what's clickable), `screenshot`, `accessibility_tree`, `inspect_point`, `audit` (unnamed controls) |
+| **Look** | `snapshot` (what's on screen, with ids, text and what's clickable), `screenshot`, `accessibility_tree`, `inspect_point`, `audit` (unnamed controls), `diagnose` (overlaps, clipping, text that doesn't fit, duplicate ids) |
 | **Act** | `click`, `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `window`, all by id, text or position |
 | **Wait** | `wait_for` text or an id, `wait_idle` until the screen settles |
 | **Ask the app** | `messages`, `logs`, `state`, `query`, `run_app_action`, `perf` (frame, view and update timings), `clipboard` |

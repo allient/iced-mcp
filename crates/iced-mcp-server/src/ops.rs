@@ -109,6 +109,7 @@ pub(crate) async fn run_step(app: &mut App, ctx: &Ctx, step: &Step) -> Result<St
             tokio::time::sleep(Duration::from_millis(ms)).await;
             Ok(format!("slept {ms} ms"))
         }
+        "expect_no_diagnostics" => expect_no_diagnostics(app, &args(&step.args)?).await,
         "echo" => Ok(args::<EchoParams>(&step.args)?.message),
         other => Err(format!(
             "unknown action `{other}`; one of {}",
@@ -1980,6 +1981,38 @@ pub(crate) async fn audit(app: &mut App, p: &AuditParams) -> Result<String, Stri
          or replace approximate hit-test regions with semantic nodes (see the iced-mcp README).",
     );
     Ok(text)
+}
+
+/// Layout findings in a fresh snapshot: the text, and the findings as JSON.
+pub(crate) async fn diagnose(
+    app: &mut App,
+    p: &DiagnoseParams,
+) -> Result<(String, serde_json::Value), String> {
+    let snapshot = take_snapshot(app, p.window.as_deref()).await?;
+    let kinds = p.kinds.clone().unwrap_or_default();
+    let findings = crate::diagnose::diagnose(&snapshot, &kinds);
+    let visible = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.visible.is_some())
+        .count();
+    let text = crate::diagnose::render(&snapshot.window, &findings, visible);
+    let value = serde_json::json!({ "window": snapshot.window, "findings": findings });
+    Ok((text, value))
+}
+
+/// A step that fails when [`diagnose`] finds anything (of the kinds asked).
+pub(crate) async fn expect_no_diagnostics(
+    app: &mut App,
+    p: &DiagnoseParams,
+) -> Result<String, String> {
+    let (text, value) = diagnose(app, p).await?;
+    let count = value["findings"].as_array().map_or(0, Vec::len);
+    if count == 0 {
+        Ok(text)
+    } else {
+        Err(text)
+    }
 }
 
 // --------------------------------------------------------------- app actions

@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.2.0"
 license = "MIT"
 # `slice::as_chunks` (crates/iced-mcp-server/src/diff.rs) is stable since 1.88.
 rust-version = "1.88"
@@ -19,8 +19,8 @@ keywords = ["iced", "mcp", "gui", "testing", "ai"]
 categories = ["gui", "development-tools::testing"]
 
 [workspace.dependencies]
-iced-mcp-protocol = { path = "crates/iced-mcp-protocol", version = "0.1.0" }
-iced-mcp = { path = "crates/iced-mcp", version = "0.1.0" }
+iced-mcp-protocol = { path = "crates/iced-mcp-protocol", version = "0.2.0" }
+iced-mcp = { path = "crates/iced-mcp", version = "0.2.0" }
 
 # iced is pre-1.0 and every minor breaks API: pinned to one minor.
 # The bridge runs a custom `Program` through the shell directly, renderer-free.

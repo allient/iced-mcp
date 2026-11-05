@@ -5,10 +5,14 @@
 //! focusables, text inputs and text. Visibility follows `iced_selector`:
 //! scrollables translate and clip what is inside them.
 
+use iced::advanced::text::paragraph::Plain;
+use iced::advanced::text::Paragraph;
 use iced::advanced::widget::operation::{Focusable, Scrollable, TextInput};
-use iced::advanced::widget::{Id, Operation};
+use iced::advanced::widget::{tree, Id, Operation, Tree};
 use iced::{Rectangle, Vector};
-use iced_mcp_protocol::{semantics_version, Layer, Node, NodeKind, Rect, ScrollInfo, SemanticNode};
+use iced_mcp_protocol::{
+    semantics_version, Layer, Node, NodeKind, Rect, ScrollInfo, SemanticNode, Size, TextFit,
+};
 
 use std::any::Any;
 
@@ -84,6 +88,7 @@ impl Collector {
             track_bounds: None,
             vertical: None,
             inverted: None,
+            text_fit: None,
         });
         index
     }
@@ -164,6 +169,7 @@ impl Collector {
             track_bounds,
             vertical: semantics.and_then(|node| node.vertical),
             inverted: semantics.and_then(|node| node.inverted),
+            text_fit: None,
         });
         index
     }
@@ -326,6 +332,62 @@ fn clip(text: &str) -> String {
     let mut cut: String = text.chars().take(MAX_TEXT).collect();
     cut.push('…');
     cut
+}
+
+/// Measures every `text` widget's paragraph and records, on the text node
+/// it reported, the size its text needs against the space it was given.
+///
+/// An [`Operation`] only hears a text's string and its (clamped) layout
+/// bounds, which never show an overflow. The paragraph does: iced's `Text`
+/// keeps a [`Plain`] paragraph in its widget state, laid out within the
+/// limits the widget had. The tree is walked in the same pre-order as the
+/// operation, so the n-th paragraph with some content belongs to the n-th
+/// text node with that content. Widgets that keep their text elsewhere
+/// (text inputs, rich text, custom widgets) are not measured.
+pub(crate) fn measure_text<P: Paragraph + 'static>(tree: &Tree, nodes: &mut [Node]) {
+    let mut found = Vec::new();
+    paragraphs::<P>(tree, &mut found);
+    assign_text_fit(found, nodes);
+}
+
+fn paragraphs<P: Paragraph + 'static>(tree: &Tree, out: &mut Vec<(String, TextFit)>) {
+    if let tree::State::Some(state) = &tree.state {
+        if let Some(plain) = state.downcast_ref::<Plain<P>>() {
+            out.push((plain.content().to_owned(), text_fit(plain.raw())));
+        }
+    }
+    for child in &tree.children {
+        paragraphs::<P>(child, out);
+    }
+}
+
+fn text_fit<P: Paragraph>(paragraph: &P) -> TextFit {
+    let needed = paragraph.min_bounds();
+    let available = paragraph.bounds();
+    let finite = |v: f32| v.is_finite().then_some(v);
+    TextFit {
+        needed: Size {
+            width: needed.width,
+            height: needed.height,
+        },
+        available_width: finite(available.width),
+        available_height: finite(available.height),
+    }
+}
+
+/// Gives each measured paragraph to the first text node, in order, that
+/// shows the same content and has no measurement yet.
+pub(crate) fn assign_text_fit(found: Vec<(String, TextFit)>, nodes: &mut [Node]) {
+    for (content, fit) in found {
+        let text = clip(&content);
+        if let Some(node) = nodes.iter_mut().find(|node| {
+            node.kind == NodeKind::Text
+                && node.text_fit.is_none()
+                && node.text.as_deref() == Some(text.as_str())
+        }) {
+            node.text_fit = Some(fit);
+        }
+    }
 }
 
 /// The visible centre of every node worth asking "what cursor shows here":
@@ -508,6 +570,7 @@ pub(crate) fn regions(
             track_bounds: None,
             vertical: None,
             inverted: None,
+            text_fit: None,
         })
         .collect()
 }
@@ -643,6 +706,84 @@ mod tests {
         Operation::custom(&mut collector, None, bounds, &mut bad);
         let last = collector.nodes.last().unwrap();
         assert_eq!(last.role.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn paragraphs_in_the_tree_measure_their_text_nodes() {
+        use iced::advanced::text::{self, Text};
+        type P = <iced::Renderer as text::Renderer>::Paragraph;
+        let plain = |content: &str, width: f32| {
+            Plain::<P>::new(Text {
+                content: content.to_owned(),
+                bounds: iced::Size::new(width, f32::INFINITY),
+                size: iced::Pixels(16.0),
+                line_height: text::LineHeight::default(),
+                font: iced::Font::default(),
+                align_x: text::Alignment::Default,
+                align_y: iced::alignment::Vertical::Top,
+                shaping: text::Shaping::Advanced,
+                wrapping: text::Wrapping::None,
+            })
+        };
+        let leaf = |state: Plain<P>| Tree {
+            tag: tree::Tag::of::<Plain<P>>(),
+            state: tree::State::new(state),
+            children: Vec::new(),
+        };
+        let root = Tree {
+            tag: tree::Tag::stateless(),
+            state: tree::State::None,
+            children: vec![
+                leaf(plain("A label far too long for forty pixels", 40.0)),
+                leaf(plain("Ok", 400.0)),
+            ],
+        };
+        let mut collector = Collector::new(Layer::Base);
+        let bounds = Rectangle::new(iced::Point::ORIGIN, iced::Size::new(40.0, 20.0));
+        Operation::text(
+            &mut collector,
+            None,
+            bounds,
+            "A label far too long for forty pixels",
+        );
+        Operation::text(&mut collector, None, bounds, "Ok");
+        Operation::text(&mut collector, None, bounds, "Never measured");
+        measure_text::<P>(&root, &mut collector.nodes);
+        let fits = |i: usize| collector.nodes[i].text_fit.map(|fit| fit.fits());
+        assert_eq!(fits(0), Some(false), "{:?}", collector.nodes[0].text_fit);
+        assert_eq!(fits(1), Some(true));
+        assert_eq!(fits(2), None, "no paragraph: unknown");
+    }
+
+    #[test]
+    fn measurements_go_to_matching_text_in_order() {
+        let fit = |w| TextFit {
+            needed: Size {
+                width: w,
+                height: 10.0,
+            },
+            available_width: Some(50.0),
+            available_height: None,
+        };
+        let mut collector = Collector::new(Layer::Base);
+        let bounds = Rectangle::new(iced::Point::ORIGIN, iced::Size::new(50.0, 10.0));
+        for text in ["Add", "Save", "Add"] {
+            Operation::text(&mut collector, None, bounds, text);
+        }
+        assign_text_fit(
+            vec![
+                ("Add".into(), fit(10.0)),
+                ("Add".into(), fit(90.0)),
+                ("Other".into(), fit(1.0)),
+            ],
+            &mut collector.nodes,
+        );
+        let widths: Vec<_> = collector
+            .nodes
+            .iter()
+            .map(|n| n.text_fit.map(|f| f.needed.width))
+            .collect();
+        assert_eq!(widths, [Some(10.0), None, Some(90.0)]);
     }
 
     #[test]

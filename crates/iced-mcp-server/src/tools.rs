@@ -643,6 +643,29 @@ impl Server {
     }
 
     #[tool(
+        description = "Layout diagnostics on the current screen: overlapping interactive widgets, content clipped by its container or the window, text that does not fit its widget, and duplicate widget ids. Each finding names the nodes ([ref], #id), their boxes and why it matters. Use after UI changes; `expect_no_diagnostics` makes it a flow assertion.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn diagnose(&self, Parameters(p): Parameters<DiagnoseParams>) -> ToolResult {
+        let mut apps = self.apps.lock().await;
+        let outcome = match apps.get(p.app.as_deref()) {
+            Ok(app) => ops::diagnose(app, &p).await,
+            Err(error) => Err(error),
+        };
+        match outcome {
+            Ok((text, value)) => {
+                let mut result = CallToolResult::structured(value);
+                result.content = vec![ContentBlock::text(match apps.recording.as_ref() {
+                    Some(r) => format!("{}\n{text}", r.reminder()),
+                    None => text,
+                })];
+                Ok(result)
+            }
+            Err(error) => Self::reply(&apps, Err(error)),
+        }
+    }
+
+    #[tool(
         description = "Wait until text or an id appears (or disappears with gone=true). Fails with the visible text when it does not.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -754,7 +777,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Run several steps in one call when you need not look in between: click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, query, expect_query, expect_message, screenshot_diff, echo. Stops at the first failure.",
+        description = "Run several steps in one call when you need not look in between: click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, query, expect_query, expect_message, screenshot_diff, expect_no_diagnostics, echo. Stops at the first failure.",
         annotations(open_world_hint = false)
     )]
     async fn run_sequence(&self, Parameters(p): Parameters<SequenceParams>) -> ToolResult {
@@ -1345,6 +1368,7 @@ mod tests {
             "state",
             "record_start",
             "audit",
+            "diagnose",
         ] {
             assert!(
                 names.contains(&expected.to_owned()),

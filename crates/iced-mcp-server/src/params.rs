@@ -543,8 +543,8 @@ pub(crate) struct FlowStartParams {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct FlowStepParams {
     /// One of click, type_text, press_key, scroll, drag, hover, paste,
-    /// wait_for, wait_idle, sleep, run_app_action, expect_message,
-    /// screenshot_diff, echo.
+    /// wait_for, wait_idle, sleep, run_app_action, query, expect_query,
+    /// expect_message, screenshot_diff, expect_no_diagnostics, echo.
     pub(crate) action: String,
     /// That action's parameters, as its tool takes them.
     #[serde(default)]
@@ -638,4 +638,16 @@ pub(crate) struct ExpectQueryParams {
     /// Keep asking until it does, up to this many ms (default 3000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct DiagnoseParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) window: Option<String>,
+    /// Only these kinds: overlap, clipped, text_overflow, duplicate_id
+    /// (default: all).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) kinds: Option<Vec<crate::diagnose::DiagnosticKind>>,
 }

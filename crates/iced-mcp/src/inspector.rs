@@ -12,7 +12,9 @@
 //! input would. The overlay pass leaves its half in [`Slot::pass`] for the
 //! base pass to finish and answer.
 
-use crate::collect::{covered, id_name, interaction_name, probe_points, regions, Collector};
+use crate::collect::{
+    covered, id_name, interaction_name, measure_text, probe_points, regions, Collector,
+};
 use crate::registry::{Job, Pass, Registry, Slot};
 
 use iced::advanced::layout::{self, Layout};
@@ -81,7 +83,7 @@ impl<'a, Message, Theme, Renderer> Inspector<'a, Message, Theme, Renderer> {
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Inspector<'_, Message, Theme, Renderer>
 where
-    Renderer: iced::advanced::Renderer,
+    Renderer: iced::advanced::text::Renderer,
 {
     fn tag(&self) -> tree::Tag {
         tree::Tag::stateless()
@@ -232,7 +234,7 @@ where
 
 impl<Message, Theme, Renderer> Inspector<'_, Message, Theme, Renderer>
 where
-    Renderer: iced::advanced::Renderer,
+    Renderer: iced::advanced::text::Renderer,
 {
     /// The base pass: finishes the job at the head of the queue.
     #[allow(clippy::too_many_arguments)]
@@ -259,6 +261,7 @@ where
                     .as_widget_mut()
                     .operate(tree, layout, renderer, &mut collector);
                 let mut nodes = collector.nodes;
+                measure_text::<Renderer::Paragraph>(tree, &mut nodes);
                 let mut hit = |point: Point| {
                     content.as_widget().mouse_interaction(
                         tree,
@@ -641,7 +644,7 @@ impl<'a, Message, Theme, Renderer> From<Inspector<'a, Message, Theme, Renderer>>
 where
     Message: 'a,
     Theme: 'a,
-    Renderer: iced::advanced::Renderer + 'a,
+    Renderer: iced::advanced::text::Renderer + 'a,
 {
     fn from(inspector: Inspector<'a, Message, Theme, Renderer>) -> Self {
         Element::new(inspector)

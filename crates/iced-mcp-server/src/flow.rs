@@ -79,6 +79,7 @@ pub(crate) const STEP_ACTIONS: &[&str] = &[
     "query",
     "expect_query",
     "screenshot_diff",
+    "expect_no_diagnostics",
     "echo",
 ];
 

@@ -31,7 +31,7 @@ tooltip gets a name for free.
 | Group | Tools | |
 |---|---|---|
 | Session | `launch` · `connect` · `disconnect` · `restart` · `status` · `setup_help` | Several apps at once: each has a `name`, tools take `app`, the last connected is the default. `launch` reports build/start failures with the app's last output; `restart` relaunches with the same command; `setup_help` explains adding the bridge |
-| Look | `snapshot` · `accessibility_tree` · `highlight` · `screenshot` · `inspect_point` · `audit` | Screen outline; role/name/value and AccessKit-compatible tree for widgets and canvas semantics, with per-window coverage counts; temporary live target outline; PNG of a window/node/region, optionally highlighted; point inspection; semantic gaps |
+| Look | `snapshot` · `accessibility_tree` · `highlight` · `screenshot` · `inspect_point` · `audit` · `diagnose` | Screen outline; role/name/value and AccessKit-compatible tree for widgets and canvas semantics, with per-window coverage counts; temporary live target outline; PNG of a window/node/region, optionally highlighted; point inspection; semantic gaps; layout findings (see [Layout diagnostics](#layout-diagnostics)) |
 | Act | `click` · `type_text` · `paste` · `press_key` · `scroll` · `drag` · `hover` · `window` | Targets: `id`, `text` (substring or `exact`), `ref`, or `x`/`y`. Every action **waits for the screen to settle** and replies with the **messages the app published** |
 | Wait | `wait_for` · `wait_idle` | Until text/id appears or disappears; until the screen stops changing |
 | App side | `messages` · `logs` · `state` · `perf` · `clipboard` · `app_actions` · `run_app_action` · `query` | Message log; stdout/stderr with a cursor and character budget; the app's state; frame/view/update timings; clipboard; actions and read-only queries the app registered (`app_actions` returns complete output schemas in structured content; queries answer JSON, also as MCP `structuredContent`) |
@@ -42,7 +42,8 @@ tooltip gets a name for free.
 `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `wait_for`,
 `wait_idle`, `sleep`, `run_app_action`, `query`, `expect_query` (an assertion
 on a query's JSON), `expect_message` (an assertion that a message containing
-some text arrives), `screenshot_diff` and `echo`.
+some text arrives), `screenshot_diff`, `expect_no_diagnostics` (an assertion
+that `diagnose` finds nothing, optionally of some `kinds`) and `echo`.
 
 A snapshot looks like:
 
@@ -115,6 +116,42 @@ operation.custom(self.id.as_ref(), layout.bounds(), &mut ("iced-mcp/semantics@1"
   clean result is a diagnostic, not proof of complete widget coverage.
 - Describe what is visible, not the whole data set; the bridge keeps at most
   2000 nodes per widget.
+
+## Layout diagnostics
+
+`diagnose` checks the current screen for layout mistakes and lists each
+finding with its kind, the nodes' `[ref]`s and ids, their boxes and a short
+explanation (also as JSON in `structuredContent`). `kinds` narrows it to some
+of them. It is a separate tool from `audit`: `audit` asks whether widgets
+*say* what they are (names, roles, state); `diagnose` asks whether they are
+*laid out* right, and its findings are what `expect_no_diagnostics` fails on.
+
+| Kind | What it reports | How |
+|---|---|---|
+| `overlap` | Two interactive widgets covering the same pixels | Visible leaves that show a cursor (`pointer`, `text`…), whose boxes intersect by more than 1 px both ways. Skipped: a widget and its own children, `label` nodes (they name the control under them), `region`s (approximate), drawn semantic content, and an overlay over the base (menus are meant to cover it) |
+| `clipped` | Content sticking out of its container or the window, or squeezed to nothing | A node whose box crosses its nearest reported container by more than 1 px; a node whose visible part crosses the window edge (only the outermost one); an input, focusable, label or unmeasured text that the layout shrank to zero width or height. Scrolled content is not clipping: children of a scrollable are its content, and what is scrolled out of view is hidden, not clipped |
+| `text_overflow` | Text that needs more room than its widget had | The bridge reads the paragraph iced's `text` widget lays out and compares its minimum size with the space it was given (`text_fit` on the node), with half a pixel of slack. Catches `Wrapping::None` text cut off by a narrow box, a word longer than the line, and text in a fixed or squeezed height |
+| `duplicate_id` | The same widget id on two different widgets | Nodes of one window with the same `#id` and different boxes (a widget that reports itself twice with one box, like a text input, counts once). Hidden nodes count: `#id` targets and widget operations still reach only one |
+
+Limits, honestly:
+
+- iced's layout clamps most children to the space they are given, so a
+  widget rarely sticks out of its container: content that does not fit is
+  usually *squeezed* (reported) or, for text, overflows its paragraph
+  (reported). `float`/translated content and custom widgets that position
+  children themselves are where `clipped` finds real crossings.
+- Text is measured only for iced's `text` widget (including the labels of
+  buttons and other widgets built on it) in the base layer. Text inputs,
+  rich text, text in overlays and text drawn by custom widgets or canvases
+  have no `text_fit`: unknown, never reported as fitting.
+- A text input squeezed to less than its text needs, but not to zero, is
+  not found.
+- Overlap uses the cursor hint, so a clickable widget that shows the default
+  arrow is not considered interactive, and two controls whose padding
+  overlaps but whose labels do not are not reported.
+- A clean result means none of these rules fired on what the widget tree
+  reports; it is not proof the layout is right. Pair it with
+  `screenshot_diff` for what only pixels show.
 
 ## Queries
 
@@ -269,6 +306,7 @@ sides:
 
 | Protocol | Changes |
 |---|---|
+| 6 | `text_fit` on text nodes (layout diagnostics) |
 | 5 | Direct widget operations for focus/text selection, including overlays |
 | 4 | Read-only app queries (`query`, `expect_query`, `query_with_schema`); canvas semantics (`iced-mcp/semantics@1`, `semantic` nodes); JSON Schemas for semantics and flows; `iced-mcp run-flow` for CI; clickable matches win over drawn ones |
 | 3 | `perf`, `state`, `clipboard`, app `actions`; server: multiple apps, settling after actions, `wait_idle`, `screenshot_diff`, flows, screen recording, `inspect_point`, `audit`, `paste`, `restart`, `setup_help`, log cursors |

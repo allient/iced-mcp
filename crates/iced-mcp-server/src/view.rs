@@ -497,6 +497,7 @@ mod tests {
             track_bounds: None,
             vertical: None,
             inverted: None,
+            text_fit: None,
         }
     }
 

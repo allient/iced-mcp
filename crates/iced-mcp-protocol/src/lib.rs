@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to the messages below.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The port a bridge listens on when nothing else is configured.
 pub const DEFAULT_PORT: u16 = 9339;
@@ -547,6 +547,37 @@ pub struct Node {
     /// Whether visual direction is reversed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inverted: Option<bool>,
+    /// For a text node: the size its text needs and the space it was given,
+    /// when the bridge could measure it. `None` means unknown, not "fits".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_fit: Option<TextFit>,
+}
+
+/// How a text's laid-out size compares with the space its widget had.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TextFit {
+    /// The smallest box that holds the text as shaped and wrapped.
+    pub needed: Size,
+    /// The width it could take; `None` when unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_width: Option<f32>,
+    /// The height it could take; `None` when unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_height: Option<f32>,
+}
+
+impl TextFit {
+    /// Half a pixel of slack: shaping rounds.
+    const SLACK: f32 = 0.5;
+
+    /// Whether the text fits the space it was given.
+    pub fn fits(&self) -> bool {
+        let within = |needed: f32, available: Option<f32>| {
+            available.is_none_or(|available| needed <= available + Self::SLACK)
+        };
+        within(self.needed.width, self.available_width)
+            && within(self.needed.height, self.available_height)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -899,6 +930,27 @@ mod tests {
         assert_eq!(
             committed, generated,
             "schema changed: regenerate with ICED_MCP_UPDATE_SCHEMA=1"
+        );
+    }
+
+    #[test]
+    fn text_fit_compares_needed_with_available_space() {
+        let fit = |w, h, aw, ah| TextFit {
+            needed: Size {
+                width: w,
+                height: h,
+            },
+            available_width: aw,
+            available_height: ah,
+        };
+        assert!(fit(100.0, 20.0, None, None).fits());
+        assert!(fit(100.4, 20.0, Some(100.0), None).fits(), "rounding slack");
+        assert!(!fit(140.0, 20.0, Some(100.0), None).fits());
+        assert!(!fit(80.0, 42.0, Some(100.0), Some(21.0)).fits());
+        let json = serde_json::to_string(&fit(1.0, 2.0, Some(3.0), None)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"needed":{"width":1.0,"height":2.0},"available_width":3.0}"#
         );
     }
 
