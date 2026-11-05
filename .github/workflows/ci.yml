@@ -29,6 +29,8 @@ jobs:
       - name: Format
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
+      # The server builds Luau (mlua → luau0-src) with the runner's C++
+      # compiler: g++ on ubuntu, clang on macos, MSVC on windows.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test

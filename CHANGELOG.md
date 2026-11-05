@@ -2,6 +2,42 @@
 
 All notable changes to iced-mcp. The three crates share one version.
 
+## 0.3.0 — 2026-11-04
+
+### Added
+
+- **Luau scripts**: `script_eval {source, app?, timeout_ms?}` runs one
+  sandboxed Luau script instead of many tool calls. `app` (and
+  `apps["name"]` for other apps) has a method per step (`click`,
+  `type_text`, `wait_for`, `load_fixture`, `query`, `expect`,
+  `expect_pixel`, `diagnose`, `snapshot`, `find`/`find_all`,
+  `screenshot_diff`, `messages`, `state`, `logs`…) taking the step's
+  arguments; a failing step raises its own message with the script line.
+  The reply has the printed output, the return value as JSON, the steps
+  with their lines and the duration; a failure writes a bundle with
+  `script.luau`.
+- `script_api` and `crates/iced-mcp-server/iced-mcp.d.luau`: the typed
+  API, for agents and editors. Scripts are type-checked with
+  `luau-analyze` (on `PATH` or `ICED_MCP_LUAU_ANALYZE`) before they touch
+  the app; without it the result says the check did not run.
+- Sandbox: Luau sandbox mode, no `io`/`os`/`debug`/`require`/
+  `loadstring`, a wall-clock deadline (60 s default), 64 MiB of memory and
+  64 KiB of output. Each script runs on its own thread, so other MCP
+  requests go on between its steps.
+- `iced-mcp run-script FILE [--launch CMD] [--root DIR] [--timeout-ms N]`
+  (exit 0/1/2), and `run-suite` runs `.iced-mcp/scripts/*.luau` after the
+  flows on the `--launch` app, with the same `--only`, `--repeat`,
+  `--until-fail`, `--fail-fast` and failure bundles.
+- Example scripts for the todos example in
+  `examples/todos/.iced-mcp/scripts/`.
+
+### Changed
+
+- The server depends on `mlua` (Luau, built from C++ source): building it
+  needs a C++ compiler.
+- The protocol is unchanged (version 6): a 0.2 bridge works with this
+  server.
+
 ## 0.2.0 — 2026-11-04
 
 ### Added

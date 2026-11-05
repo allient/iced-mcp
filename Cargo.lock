@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "iced-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "block2 0.5.1",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "iced-mcp-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1359,7 +1359,7 @@ dependencies = [
 
 [[package]]
 name = "iced-mcp-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "accesskit",
  "base64",
