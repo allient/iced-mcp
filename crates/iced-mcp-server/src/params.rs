@@ -67,6 +67,10 @@ pub(crate) struct LaunchParams {
     /// The fixture's args, as its description says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) fixture_args: Option<serde_json::Value>,
+    /// Keep the window from taking keyboard focus from you (default true;
+    /// macOS). false: it comes to the front like a normal launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) background: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

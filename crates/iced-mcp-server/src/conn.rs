@@ -45,6 +45,7 @@ impl Conn {
                 messages: false,
                 fixture: None,
                 fixture_error: None,
+                background: false,
             },
             reader: BufReader::new(read),
             writer: write,

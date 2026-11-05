@@ -24,6 +24,7 @@
 //!
 //! [iced]: https://iced.rs
 
+mod background;
 mod bridge;
 mod capture;
 mod collect;
@@ -39,7 +40,8 @@ use bridge::Command;
 use iced_mcp_protocol::{
     Acted, ActionInfo, ActionKind, ActionList, AppInfo, ClipboardContent, Outcome, QueryValue,
     Request, Response, ScreenshotParams, StateDump, WindowAction, WindowInfo, DEFAULT_PORT,
-    ENV_ENABLE, ENV_FIXTURE, ENV_FIXTURE_ARGS, ENV_PORT, ENV_TOKEN, PROTOCOL_VERSION,
+    ENV_BACKGROUND, ENV_ENABLE, ENV_FIXTURE, ENV_FIXTURE_ARGS, ENV_PORT, ENV_TOKEN,
+    PROTOCOL_VERSION,
 };
 use inspector::Inspector;
 use registry::{Job, Registry, Replier};
@@ -117,6 +119,10 @@ pub struct Config {
     pub token: Option<String>,
     /// Messages kept for the agent; `0` turns the log off.
     pub message_log: usize,
+    /// Keep the app from taking keyboard focus when it starts or opens a
+    /// window (macOS; see the guide). `ICED_MCP_BACKGROUND=1`, which the
+    /// server's `launch` sets unless asked not to.
+    pub background: bool,
 }
 
 impl Config {
@@ -129,6 +135,8 @@ impl Config {
                 .unwrap_or(DEFAULT_PORT),
             token: std::env::var(ENV_TOKEN).ok().filter(|t| !t.is_empty()),
             message_log: DEFAULT_MESSAGE_LOG,
+            background: std::env::var(ENV_BACKGROUND)
+                .is_ok_and(|v| !matches!(v.trim(), "" | "0" | "false")),
         }
     }
 }
@@ -350,6 +358,9 @@ where
         let (sender, receiver) = mpsc::unbounded();
         if let Ok(mut inbox) = INBOX.lock() {
             *inbox = Some(receiver);
+        }
+        if self.config.background {
+            BACKGROUND.store(background::install(), std::sync::atomic::Ordering::Relaxed);
         }
         match bridge::start(&self.config, sender) {
             Ok(port) => eprintln!("iced-mcp: listening on 127.0.0.1:{port}"),
@@ -630,6 +641,7 @@ where
                     messages: state.log.is_enabled(),
                     fixture: state.fixture.clone(),
                     fixture_error: state.fixture_error.clone(),
+                    background: BACKGROUND.load(std::sync::atomic::Ordering::Relaxed),
                 })));
                 Task::none()
             }
@@ -912,6 +924,9 @@ fn parse_fixture_env(
     };
     Some(Ok((name, args)))
 }
+
+/// Whether the background guard is on, for `hello`.
+static BACKGROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Requests from the socket, taken once by the subscription.
 static INBOX: Mutex<Option<UnboundedReceiver<Command>>> = Mutex::new(None);

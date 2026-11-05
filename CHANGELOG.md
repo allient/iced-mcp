@@ -25,6 +25,11 @@ All notable changes to iced-mcp. The three crates share one version.
   `ICED_MCP_FIXTURE`/`ICED_MCP_FIXTURE_ARGS` start an app in one, and a
   flow's `fixture` is loaded before its first step. The todos example has
   `empty` and `groceries`.
+- **Background launches**: apps the server launches no longer take keyboard
+  focus on macOS (activation handed back unless a click caused it,
+  accessory app, no App Nap); `launch {background: false}` opts out.
+  `ICED_MCP_BACKGROUND` asks for it; other platforms are documented, not
+  handled.
 
 ### Changed
 

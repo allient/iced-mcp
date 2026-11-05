@@ -61,6 +61,10 @@ pub(crate) struct FlowLaunch {
     pub(crate) cwd: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) env: HashMap<String, String>,
+    /// Keep the app from taking keyboard focus (default true; macOS — see
+    /// the guide). `false` lets it come to the front like a normal launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) background: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

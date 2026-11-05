@@ -27,6 +27,9 @@ pub const ENV_TOKEN: &str = "ICED_MCP_TOKEN";
 pub const ENV_FIXTURE: &str = "ICED_MCP_FIXTURE";
 /// The JSON `args` for [`ENV_FIXTURE`] (default `null`).
 pub const ENV_FIXTURE_ARGS: &str = "ICED_MCP_FIXTURE_ARGS";
+/// `1`: keep the app from taking keyboard focus (where the platform lets an
+/// app do that for itself).
+pub const ENV_BACKGROUND: &str = "ICED_MCP_BACKGROUND";
 
 /// A request line: `{"id":1,"method":"snapshot","params":{...}}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,6 +442,10 @@ pub struct AppInfo {
     /// Why the start-up fixture could not be loaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixture_error: Option<String>,
+    /// Whether the app hands keyboard focus back when it is activated
+    /// without a click ([`ENV_BACKGROUND`], macOS only).
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

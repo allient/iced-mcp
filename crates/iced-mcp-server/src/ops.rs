@@ -1668,6 +1668,9 @@ pub(crate) fn status_text(name: &str, conn: &Conn, launched: Option<&Launched>) 
     if let Some(fixture) = &info.fixture {
         let _ = write!(text, " Fixture: {fixture}.");
     }
+    if info.background {
+        text.push_str(" In the background (does not take focus).");
+    }
     for window in &info.windows {
         let _ = write!(
             text,

@@ -248,6 +248,7 @@ async fn ensure_shared(apps: &mut Apps, command: &str) -> Result<(), String> {
         command: command.to_owned(),
         cwd: None,
         env: Default::default(),
+        background: None,
     };
     apps.launch_named(SHARED, launch, Duration::from_secs(300))
         .await

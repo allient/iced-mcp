@@ -361,6 +361,30 @@ anything near 16 ms is a dropped frame.
 - **Reacting.** Every app message is recorded (bounded `Debug` text in a ring
   buffer), so an action's reply says what the app did with it.
 
+## Background launches (keyboard focus)
+
+An app the server launches (`launch`, `restart`, flows, `run-suite`) runs
+**in the background** by default: it does not take keyboard focus from the
+editor or terminal you are typing in. Injected input does not need focus — it
+is delivered inside the widget tree — so clicks, typing and keys work the
+same while the window is unfocused or covered (verified with the todos
+example: typing into `#new-todo` and clicking a button while another app
+stayed frontmost). `launch {background: false}` (or a flow's
+`"launch": {"background": false}`) launches it like a normal app.
+
+The server asks with `ICED_MCP_BACKGROUND=1`; what the bridge can do with it
+depends on the platform, because iced 0.14 creates winit's event loop and
+windows itself and exposes neither winit's activation settings nor
+`with_active(false)`:
+
+| OS | What happens |
+|---|---|
+| macOS | Handled. winit activates the app when it finishes launching; the bridge watches the app's activation and hands it straight back to the app that was frontmost, unless a mouse click caused it (you clicked the window: it keeps focus). The app becomes an accessory app (no Dock icon, not in Cmd-Tab, no menu bar) and opts out of App Nap so a covered window keeps answering. For a moment at start-up (about one 20 ms sample in our measurements) the app is active, so a keystroke typed in that instant can land in it. `status`/`launch` say "In the background" when the guard is on |
+| Windows | Not handled by iced-mcp. Windows' foreground lock usually keeps a window opened by a background process from taking focus (it flashes in the taskbar instead), but that is the OS's rule, not a guarantee; not verified |
+| Linux | Not handled by iced-mcp. X11 depends on the window manager's focus-stealing prevention; Wayland compositors generally do not focus a new window without an activation token. Not verified |
+
+An app you start yourself and `connect` to is never changed.
+
 ## Security
 
 Anything that can reach the port can drive the app. The bridge binds
@@ -393,7 +417,7 @@ sides:
 
 | Protocol | Changes |
 |---|---|
-| 6 | `text_fit` on text nodes (layout diagnostics); fixtures (`fixture` request, `fixture` action kind, `fixture`/`fixture_error` in `hello`) |
+| 6 | `text_fit` on text nodes (layout diagnostics); fixtures (`fixture` request, `fixture` action kind, `fixture`/`fixture_error` in `hello`); `background` in `hello` |
 | 5 | Direct widget operations for focus/text selection, including overlays |
 | 4 | Read-only app queries (`query`, `expect_query`, `query_with_schema`); canvas semantics (`iced-mcp/semantics@1`, `semantic` nodes); JSON Schemas for semantics and flows; `iced-mcp run-flow` for CI; clickable matches win over drawn ones |
 | 3 | `perf`, `state`, `clipboard`, app `actions`; server: multiple apps, settling after actions, `wait_idle`, `screenshot_diff`, flows, screen recording, `inspect_point`, `audit`, `paste`, `restart`, `setup_help`, log cursors |
@@ -409,6 +433,7 @@ sides:
 | `ICED_MCP_TOKEN` | Require this token on connect |
 | `ICED_MCP_FIXTURE` | Load this fixture once the app has booted (`launch {fixture}` sets it) |
 | `ICED_MCP_FIXTURE_ARGS` | The fixture's args, as JSON |
+| `ICED_MCP_BACKGROUND` | `1`: do not take keyboard focus (macOS; `launch` sets it unless `background: false`) |
 
 ## Roadmap
 

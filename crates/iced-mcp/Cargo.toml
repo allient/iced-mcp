@@ -22,6 +22,14 @@ futures = { workspace = true }
 png = { workspace = true }
 serde_json = { workspace = true }
 
+# Background launch (`ICED_MCP_BACKGROUND`): versions iced's winit already
+# uses on macOS, so they add no crates to the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.5.1"
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std", "block2", "NSNotification", "NSObject", "NSOperation", "NSProcessInfo", "NSString"] }
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "libc", "NSApplication", "NSEvent", "NSResponder", "NSRunningApplication", "NSWorkspace"] }
+
 [dev-dependencies]
 # The example is a real app, so it needs iced's default renderers.
 iced = { version = "0.14", features = ["advanced"] }

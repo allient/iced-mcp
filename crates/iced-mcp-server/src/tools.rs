@@ -18,7 +18,8 @@ use crate::params::*;
 use crate::record::{self, Recording};
 
 use iced_mcp_protocol::{
-    Request, WindowAction, WindowParams, DEFAULT_PORT, ENV_FIXTURE, ENV_FIXTURE_ARGS,
+    Request, WindowAction, WindowParams, DEFAULT_PORT, ENV_BACKGROUND, ENV_FIXTURE,
+    ENV_FIXTURE_ARGS,
 };
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -404,11 +405,16 @@ fn spec_for(
             (program, words)
         }
     };
+    let mut env = launch.env.clone();
+    if launch.background != Some(false) {
+        env.entry(ENV_BACKGROUND.to_owned())
+            .or_insert_with(|| "1".to_owned());
+    }
     Ok(LaunchSpec {
         program,
         args,
         cwd: launch.cwd.as_ref().map(PathBuf::from),
-        env: launch.env.clone(),
+        env,
         port: conn::free_port()?,
         token,
     })
@@ -439,6 +445,8 @@ impl Server {
             command: p.command.clone(),
             cwd: p.cwd.clone(),
             env: p.env.clone().unwrap_or_default(),
+            // Recorded only when it differs from the default.
+            background: p.background.filter(|on| !on),
         };
         let outcome = async {
             let spec = with_fixture(
@@ -1620,11 +1628,26 @@ mod tests {
     }
 
     #[test]
+    fn launches_run_in_the_background_unless_told_not_to() {
+        let launch = |background| FlowLaunch {
+            command: "my-app".into(),
+            cwd: None,
+            env: std::collections::HashMap::new(),
+            background,
+        };
+        let on = spec_for(&launch(None), None, None).unwrap();
+        assert_eq!(on.env[ENV_BACKGROUND], "1");
+        let off = spec_for(&launch(Some(false)), None, None).unwrap();
+        assert!(!off.env.contains_key(ENV_BACKGROUND));
+    }
+
+    #[test]
     fn a_launch_in_a_fixture_sets_its_environment() {
         let launch = FlowLaunch {
             command: "my-app --flag".into(),
             cwd: None,
             env: std::collections::HashMap::new(),
+            background: Some(false),
         };
         let spec = spec_for(&launch, None, None).unwrap();
         assert!(with_fixture(spec.clone(), None, None).env.is_empty());

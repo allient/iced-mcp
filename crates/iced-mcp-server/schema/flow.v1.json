@@ -53,6 +53,13 @@
     "FlowLaunch": {
       "type": "object",
       "properties": {
+        "background": {
+          "description": "Keep the app from taking keyboard focus (default true; macOS — see\nthe guide). `false` lets it come to the front like a normal launch.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "command": {
           "type": "string"
         },
