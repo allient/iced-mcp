@@ -29,7 +29,7 @@ agent → edits code → launch → snapshot → type_text "BTC" → snapshot
   agent targets `#search`, the text "Save" or an icon's name, not pixel
   coordinates that break on the next layout change.
 - **Tests come for free.** Record a session as a flow, add assertions, replay
-  it in CI with `iced-mcp run-flow`. Visual baselines catch what text can't.
+  it in CI with `iced-mcp run-suite`. Visual baselines catch what text can't.
 - **No OS permissions.** Input is injected inside iced, not through the OS:
   nothing to grant in System Settings, and it works on macOS, Windows and Linux.
 - **Sees custom drawing too.** Charts, canvases and plots can describe what
@@ -87,7 +87,7 @@ login form"*. It starts the app itself.
 | **Act** | `click`, `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `window`, all by id, text or position |
 | **Wait** | `wait_for` text or an id, `wait_idle` until the screen settles |
 | **Ask the app** | `messages`, `logs`, `state`, `query`, `run_app_action`, `perf` (frame, view and update timings), `clipboard` |
-| **Test** | `flow_start` → `flow_finish` → `flow_run`, `screenshot_diff`, `run_sequence`, screen recording |
+| **Test** | `flow_start` → `flow_finish` → `flow_run`, `screenshot_diff`, `run_sequence`, screen recording; `iced-mcp run-suite` runs them all in CI and keeps a failure bundle (tree, diagnostics, screenshot, logs) per failure |
 | **Sessions** | `launch`, `connect`, `restart`, several apps at once |
 
 A snapshot reads like this:

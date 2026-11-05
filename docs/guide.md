@@ -201,13 +201,57 @@ iced-mcp run-flow <name> [--root DIR] [--update-baselines] [--prerequisite-ok]
 # exit 0: every step passed · 1: a step failed · 2: bad arguments
 ```
 
+**A whole suite** runs every flow (or the ones you pick) with one line per
+flow and a summary:
+
+```sh
+iced-mcp run-suite [--root DIR] [--only GLOB]… [--repeat N | --until-fail N]
+                   [--fail-fast] [--update-baselines] [--launch CMD] [--prerequisite-ok]
+# PASS add-todo (2.1s)
+# FAIL broken (0.7s) — [2] ✗ wait_for "never there" (0.5s) — never appeared …
+#     bundle: .iced-mcp/failures/broken-20261104-192124-371
+# FAIL — 1 passed, 1 failed of 2 run (2 flow(s) × 1 round(s)) in 2.8s
+# exit 0: every flow passed · 1: a flow failed · 2: bad arguments, or no flow matched
+```
+
+`--only` takes `*`/`?` globs and can repeat. `--repeat N` runs the suite N
+times; `--until-fail N` runs it up to N times and stops after the first round
+with a failure (for hunting flaky flows). End-to-end flows launch their own
+app. Fragments (no `launch`) need one: `--launch CMD` starts it once, runs
+every fragment on it and relaunches it if it dies.
+
+**Failure bundles.** When a step fails (in `flow_run`, `run-flow` or
+`run-suite`), the run captures the app while it is still up into
+`.iced-mcp/failures/<flow>-<timestamp>/`, and the report names the path:
+
+| File | |
+|---|---|
+| `failure.txt` | the failing step, its error, the app, when |
+| `steps.log` | the run report, one line per step |
+| `snapshot.txt` · `snapshot.json` | the widget tree at failure: the outline with hidden nodes, and the raw nodes |
+| `diagnostics.txt` · `diagnostics.json` | layout findings at failure |
+| `screenshot.png` | the window, full resolution |
+| `messages.log` | the app's last 200 messages |
+| `app-output.log` | its last 400 lines of stdout/stderr (apps the server launched) |
+| `flow.json` | the flow that ran |
+
+What cannot be captured (an app that crashed has no screenshot) is replaced
+by `<file>.error.txt` saying why; the bundle is written anyway. Read
+`failure.txt` first, then the screenshot and `snapshot.txt`.
+
 It needs a GUI session (on macOS: a logged-in session, which GitHub's macOS
 runners have). Use a prebuilt binary in the flow's launch command, record
 baselines on the same runner type (scale factor and fonts change pixels), and
 prefer `expect_query` / `expect_message` / `wait_for` over pixel diffs.
 
 Commit `.iced-mcp/flows/` and `.iced-mcp/baselines/`; ignore
-`.iced-mcp/diffs/` and `.iced-mcp/recordings/`.
+`.iced-mcp/diffs/`, `.iced-mcp/recordings/` and `.iced-mcp/failures/`:
+
+```gitignore
+.iced-mcp/diffs/
+.iced-mcp/recordings/
+.iced-mcp/failures/
+```
 
 ## Settling
 

@@ -5,6 +5,7 @@
 //! `{"mcpServers":{"iced":{"command":"iced-mcp"}}}`.
 
 mod accessibility;
+mod bundle;
 mod conn;
 mod diagnose;
 mod diff;
@@ -13,6 +14,7 @@ mod keys;
 mod ops;
 mod params;
 mod record;
+mod suite;
 mod tools;
 mod view;
 
@@ -28,8 +30,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().map(String::as_str) == Some("run-flow") {
         std::process::exit(run_flow(&args[1..]).await);
     }
+    if args.first().map(String::as_str) == Some("run-suite") {
+        std::process::exit(run_suite(&args[1..]).await);
+    }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("{USAGE}");
+        println!("{USAGE}{}", suite::USAGE);
         return Ok(());
     }
     // stdout is the MCP channel: diagnostics go to stderr only.
@@ -44,7 +49,26 @@ iced-mcp run-flow [NAME]      replay .iced-mcp/flows/NAME.json; no NAME lists th
     --root DIR                project root holding .iced-mcp/ (default: current dir)
     --update-baselines        rewrite screenshot_diff baselines from this run
     --prerequisite-ok         confirm a fragment's prerequisite holds
-Exit status: 0 when every step passed, 1 otherwise, 2 on bad arguments.";
+Exit status: 0 when every step passed, 1 otherwise, 2 on bad arguments.
+";
+
+/// `iced-mcp run-suite`: every flow (or `--only` some), for CI.
+async fn run_suite(args: &[String]) -> i32 {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("{}", suite::USAGE);
+        return 0;
+    }
+    let options = match suite::parse(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}\n\n{}", suite::USAGE);
+            return 2;
+        }
+    };
+    let (code, report) = tools::Server::new().run_suite_cli(&options).await;
+    println!("{report}");
+    code
+}
 
 /// `iced-mcp run-flow`: replays a flow without an agent, for CI.
 async fn run_flow(args: &[String]) -> i32 {

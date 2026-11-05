@@ -10,6 +10,7 @@
 //! name, tools take `app`, and the most recently connected app is the
 //! default. Flows (record/replay) and screen recording follow Argent.
 
+use crate::bundle;
 use crate::conn::{self, Conn, LaunchSpec};
 use crate::flow::{self, Flow, FlowLaunch, FlowStep, StepReport, StepStatus};
 use crate::ops::{self, App, Ctx};
@@ -83,6 +84,54 @@ struct Draft {
 }
 
 impl Apps {
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self {
+            list: Vec::new(),
+            default: None,
+            recording: None,
+            draft: None,
+            root,
+        }
+    }
+
+    pub(crate) fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    pub(crate) fn set_root(&mut self, root: PathBuf) {
+        self.root = root;
+    }
+
+    /// Whether `name` is connected and its process (if launched here) runs.
+    pub(crate) fn is_connected(&mut self, name: &str) -> bool {
+        self.list.iter_mut().any(|app| {
+            app.name == name
+                && app.conn.is_some()
+                && !app
+                    .launched
+                    .as_mut()
+                    .is_some_and(|l| matches!(l.child.try_wait(), Ok(Some(_))))
+        })
+    }
+
+    /// Disconnects `name` and stops it if it was launched here.
+    pub(crate) async fn drop_app(&mut self, name: &str) {
+        self.remove(name, true).await;
+    }
+
+    /// Launches `launch` as an app called `name`.
+    pub(crate) async fn launch_named(
+        &mut self,
+        name: &str,
+        launch: FlowLaunch,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let spec = spec_for(&launch, None, None)?;
+        let (app, _) = start(Some(name.to_owned()), spec, launch, timeout).await?;
+        self.add(app).await;
+        Ok(())
+    }
+
     fn names(&self) -> String {
         self.list
             .iter()
@@ -220,22 +269,28 @@ impl Server {
         params: FlowRunParams,
         root: Option<PathBuf>,
     ) -> (bool, String) {
+        let mut apps = self.apps.lock().await;
         if let Some(root) = root {
-            self.apps.lock().await.root = root;
+            apps.root = root;
         }
-        let result = self.flow_run(Parameters(params)).await;
-        match result {
-            Ok(result) => {
-                let text = result
-                    .content
-                    .iter()
-                    .filter_map(|block| block.as_text().map(|t| t.text.clone()))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (result.is_error != Some(true), text)
+        if params.name.is_empty() {
+            let names = flow::list(&apps.root);
+            if names.is_empty() {
+                return (
+                    true,
+                    format!("No flows in {}.", flow::dir(&apps.root).display()),
+                );
             }
-            Err(error) => (false, error.to_string()),
+            return (true, names.join("\n"));
         }
+        let run = run_flow(&mut apps, &params).await;
+        (run.passed, run.text)
+    }
+
+    /// `iced-mcp run-suite`: the exit status and the report.
+    pub(crate) async fn run_suite_cli(&self, options: &crate::suite::Options) -> (i32, String) {
+        let mut apps = self.apps.lock().await;
+        crate::suite::run(&mut apps, options).await
     }
 }
 
@@ -324,13 +379,7 @@ impl Server {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
         Self {
-            apps: Arc::new(Mutex::new(Apps {
-                list: Vec::new(),
-                default: None,
-                recording: None,
-                draft: None,
-                root,
-            })),
+            apps: Arc::new(Mutex::new(Apps::new(root))),
             tool_router: Self::tool_router(),
         }
     }
@@ -1214,126 +1263,192 @@ impl Server {
             };
             return Self::reply(&apps, Ok(text));
         }
-        let loaded = match flow::load(&apps.root, &p.name) {
-            Ok(loaded) => loaded,
-            Err(error) => return Self::reply(&apps, Err(error)),
-        };
-        let ctx = Ctx {
-            root: apps.root.clone(),
-            update_baselines: p.update_baselines.unwrap_or(false),
-        };
-        let started = Instant::now();
+        let run = run_flow(&mut apps, &p).await;
+        Self::reply(
+            &apps,
+            if run.passed {
+                Ok(run.text)
+            } else {
+                Err(run.text)
+            },
+        )
+    }
+}
 
-        // End to end: launch a fresh app for the run; a fragment uses one.
-        let (app_name, launched_here) = match &loaded.launch {
-            Some(launch) => {
-                let name = format!("flow-{}", p.name);
-                let outcome = async {
-                    let spec = spec_for(launch, None, None)?;
-                    start(
-                        Some(name.clone()),
-                        spec,
-                        launch.clone(),
-                        Duration::from_secs(300),
-                    )
-                    .await
-                }
-                .await;
-                match outcome {
-                    Ok((app, _)) => {
-                        apps.add(app).await;
-                        (name, true)
-                    }
-                    Err(error) => {
-                        return Self::reply(&apps, Err(format!("launch failed: {error}")))
-                    }
-                }
-            }
-            None => {
-                if let Some(prerequisite) = &loaded.prerequisite {
-                    if !p.prerequisite_ok.unwrap_or(false) {
-                        let error = format!(
-                            "flow {} is a fragment that needs: \"{prerequisite}\". Make that true, then call again with prerequisite_ok=true.",
-                            p.name
-                        );
-                        return Self::reply(&apps, Err(error));
-                    }
-                }
-                match apps.get(p.app.as_deref()) {
-                    Ok(app) => (app.name.clone(), false),
-                    Err(error) => return Self::reply(&apps, Err(error)),
-                }
-            }
-        };
+/// The result of one flow run: its report, and the failure bundle if a
+/// step failed.
+pub(crate) struct FlowRun {
+    pub(crate) passed: bool,
+    pub(crate) text: String,
+    pub(crate) bundle: Option<PathBuf>,
+}
 
-        let mut reports: Vec<StepReport> = Vec::new();
-        let mut stopped = false;
-        for (index, step) in loaded.steps.iter().enumerate() {
-            let label = flow::label(step);
-            if stopped {
-                reports.push(StepReport {
-                    index,
-                    label,
-                    status: StepStatus::Skip,
-                    detail: String::new(),
-                    duration: Duration::ZERO,
-                });
-                continue;
+impl FlowRun {
+    fn failed(text: String, bundle: Option<PathBuf>) -> Self {
+        let text = match &bundle {
+            Some(path) => format!("{text}\nFailure bundle: {}", path.display()),
+            None => text,
+        };
+        Self {
+            passed: false,
+            text,
+            bundle,
+        }
+    }
+}
+
+/// Runs one saved flow: end to end on a fresh app it launches, or as a
+/// fragment on `p.app`. On a failure, writes a bundle while the app is
+/// still up.
+pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
+    let root = apps.root.clone();
+    let loaded = match flow::load(&root, &p.name) {
+        Ok(loaded) => loaded,
+        Err(error) => return FlowRun::failed(error, None),
+    };
+    let ctx = Ctx {
+        root: root.clone(),
+        update_baselines: p.update_baselines.unwrap_or(false),
+    };
+    let started = Instant::now();
+
+    // End to end: launch a fresh app for the run; a fragment uses one.
+    let (app_name, launched_here) = match &loaded.launch {
+        Some(launch) => {
+            let name = format!("flow-{}", p.name);
+            let outcome = async {
+                let spec = spec_for(launch, None, None)?;
+                start(
+                    Some(name.clone()),
+                    spec,
+                    launch.clone(),
+                    Duration::from_secs(300),
+                )
+                .await
             }
-            let step_started = Instant::now();
-            let outcome = match apps.get(Some(&app_name)) {
-                Ok(app) => {
-                    ops::run_step(
-                        app,
-                        &ctx,
-                        &crate::params::Step {
-                            action: step.action.clone(),
-                            args: step.args.clone(),
-                        },
-                    )
-                    .await
+            .await;
+            match outcome {
+                Ok((app, _)) => {
+                    apps.add(app).await;
+                    (name, true)
                 }
-                Err(error) => Err(error),
-            };
-            let (status, detail) = match outcome {
-                Ok(text) if step.action == "echo" => (StepStatus::Pass, text),
-                Ok(_) => (StepStatus::Pass, String::new()),
                 Err(error) => {
-                    stopped = true;
-                    let infrastructure = [
-                        "not connected",
-                        "connection broke",
-                        "closed the connection",
-                        "bad args",
-                        "unknown action",
-                        "did not answer",
-                    ]
-                    .iter()
-                    .any(|m| error.contains(m));
-                    (
-                        if infrastructure {
-                            StepStatus::Error
-                        } else {
-                            StepStatus::Fail
-                        },
-                        error,
-                    )
+                    let error = format!("launch failed: {error}");
+                    let failure = bundle::Failure {
+                        flow: &p.name,
+                        step: "launch",
+                        error: &error,
+                    };
+                    let path = bundle::write(&root, &failure, &loaded, None).await.ok();
+                    return FlowRun::failed(error, path);
                 }
-            };
+            }
+        }
+        None => {
+            if let Some(prerequisite) = &loaded.prerequisite {
+                if !p.prerequisite_ok.unwrap_or(false) {
+                    let error = format!(
+                        "flow {} is a fragment that needs: \"{prerequisite}\". Make that true, then call again with prerequisite_ok=true.",
+                        p.name
+                    );
+                    return FlowRun::failed(error, None);
+                }
+            }
+            match apps.get(p.app.as_deref()) {
+                Ok(app) => (app.name.clone(), false),
+                Err(error) => return FlowRun::failed(error, None),
+            }
+        }
+    };
+
+    let mut reports: Vec<StepReport> = Vec::new();
+    let mut bundle_path = None;
+    let mut stopped = false;
+    for (index, step) in loaded.steps.iter().enumerate() {
+        let label = flow::label(step);
+        if stopped {
             reports.push(StepReport {
                 index,
                 label,
-                status,
-                detail,
-                duration: step_started.elapsed(),
+                status: StepStatus::Skip,
+                detail: String::new(),
+                duration: Duration::ZERO,
             });
+            continue;
         }
-        if launched_here {
-            apps.remove(&app_name, true).await;
+        let step_started = Instant::now();
+        let outcome = match apps.get(Some(&app_name)) {
+            Ok(app) => {
+                ops::run_step(
+                    app,
+                    &ctx,
+                    &crate::params::Step {
+                        action: step.action.clone(),
+                        args: step.args.clone(),
+                    },
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        let duration = step_started.elapsed();
+        let (status, detail) = match outcome {
+            Ok(text) if step.action == "echo" => (StepStatus::Pass, text),
+            Ok(_) => (StepStatus::Pass, String::new()),
+            Err(error) => {
+                stopped = true;
+                let infrastructure = [
+                    "not connected",
+                    "connection broke",
+                    "closed the connection",
+                    "bad args",
+                    "unknown action",
+                    "did not answer",
+                ]
+                .iter()
+                .any(|m| error.contains(m));
+                let failure = bundle::Failure {
+                    flow: &p.name,
+                    step: &format!("[{}] {label}", index + 1),
+                    error: &error,
+                };
+                bundle_path =
+                    bundle::write(&root, &failure, &loaded, apps.get(Some(&app_name)).ok())
+                        .await
+                        .ok();
+                (
+                    if infrastructure {
+                        StepStatus::Error
+                    } else {
+                        StepStatus::Fail
+                    },
+                    error,
+                )
+            }
+        };
+        reports.push(StepReport {
+            index,
+            label,
+            status,
+            detail,
+            duration,
+        });
+    }
+    if launched_here {
+        apps.remove(&app_name, true).await;
+    }
+    let text = flow::render(&p.name, &reports, started.elapsed());
+    if let Some(path) = &bundle_path {
+        bundle::add_report(path, &text);
+    }
+    if reports.iter().all(|r| r.status == StepStatus::Pass) {
+        FlowRun {
+            passed: true,
+            text,
+            bundle: None,
         }
-        let text = flow::render(&p.name, &reports, started.elapsed());
-        let passed = reports.iter().all(|r| r.status == StepStatus::Pass);
-        Self::reply(&apps, if passed { Ok(text) } else { Err(text) })
+    } else {
+        FlowRun::failed(text, bundle_path)
     }
 }
 
