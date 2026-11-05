@@ -487,6 +487,29 @@ sides:
 ## Roadmap
 
 - Tests for multi-window `daemon` apps.
+- [ ] **Luau scripts** (planned, not scheduled). Let an agent send one small
+  script instead of many separate tool calls: set up, act, check and report in
+  a single round trip. A strict, type-checked Luau sandbox in the server (no
+  files, no network, only the app), one `app` global over the existing tools,
+  so it reuses fixtures, `expect`, `expect_pixel` and `diagnose`, and an
+  `iced-mcp.d.luau` API reference for editors and agents.
+
+  ```lua
+  app:fixture("cart-with-3-items")
+  app:click{ id = "checkout" }
+  app:wait_for{ text = "Total" }
+  for _, row in ipairs(app:find_all{ role = "row" }) do
+    app:expect(row):fits()
+  end
+  return app:query("total")
+  ```
+
+  Why: fewer round trips and tokens; real logic (conditions, loops,
+  variables, "until"); type errors caught before the app is touched; scripts
+  that double as readable regression tests. Open questions: the server takes
+  on Luau (`mlua`, C++ build) as a dependency, and how scripts relate to JSON
+  flows (record a script as a flow, or replace flows over time). Prior art:
+  [eguidev](https://github.com/cortesi/eguidev).
 
 ## Development
 
