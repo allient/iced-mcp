@@ -23,6 +23,10 @@ pub const ENV_ENABLE: &str = "ICED_MCP";
 pub const ENV_PORT: &str = "ICED_MCP_PORT";
 /// When set, the first request on a connection must be `hello` with this token.
 pub const ENV_TOKEN: &str = "ICED_MCP_TOKEN";
+/// Names a fixture the bridge loads as soon as the app has booted.
+pub const ENV_FIXTURE: &str = "ICED_MCP_FIXTURE";
+/// The JSON `args` for [`ENV_FIXTURE`] (default `null`).
+pub const ENV_FIXTURE_ARGS: &str = "ICED_MCP_FIXTURE_ARGS";
 
 /// A request line: `{"id":1,"method":"snapshot","params":{...}}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +68,8 @@ pub enum Request {
     Action(ActionParams),
     /// Run one of the app's read-only queries; the answer is JSON.
     Query(ActionParams),
+    /// Put the app in one of its named states (fixtures).
+    Fixture(ActionParams),
     /// Perform a direct operation on an iced widget in one window.
     WidgetOperation(WidgetOperationParams),
 }
@@ -361,6 +367,8 @@ pub enum ActionKind {
     Action,
     /// Reads the app's state and answers with JSON; changes nothing.
     Query,
+    /// Puts the app in a named state: a known starting point for a test.
+    Fixture,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +432,13 @@ pub struct AppInfo {
     pub windows: Vec<WindowInfo>,
     /// Whether `messages` records anything.
     pub messages: bool,
+    /// The fixture loaded last (at start-up from [`ENV_FIXTURE`], or by a
+    /// `fixture` request).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture: Option<String>,
+    /// Why the start-up fixture could not be loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

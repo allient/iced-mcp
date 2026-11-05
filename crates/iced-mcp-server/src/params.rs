@@ -61,6 +61,12 @@ pub(crate) struct LaunchParams {
     /// Seconds to wait for the first window (default 300: a cold `cargo run` builds first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) timeout_secs: Option<u64>,
+    /// Start the app in this fixture (see `fixtures`), via ICED_MCP_FIXTURE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fixture: Option<String>,
+    /// The fixture's args, as its description says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fixture_args: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -543,8 +549,9 @@ pub(crate) struct FlowStartParams {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub(crate) struct FlowStepParams {
     /// One of click, type_text, press_key, scroll, drag, hover, paste,
-    /// wait_for, wait_idle, sleep, run_app_action, query, expect_query,
-    /// expect_message, screenshot_diff, expect_no_diagnostics, echo.
+    /// wait_for, wait_idle, sleep, run_app_action, load_fixture, query,
+    /// expect_query, expect_message, screenshot_diff, expect_no_diagnostics,
+    /// echo.
     pub(crate) action: String,
     /// That action's parameters, as its tool takes them.
     #[serde(default)]
@@ -650,4 +657,15 @@ pub(crate) struct DiagnoseParams {
     /// (default: all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) kinds: Option<Vec<crate::diagnose::DiagnosticKind>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+pub(crate) struct FixtureParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app: Option<String>,
+    /// The fixture's name, from `fixtures`.
+    pub(crate) name: String,
+    /// Its arguments, as its description says.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub(crate) args: serde_json::Value,
 }

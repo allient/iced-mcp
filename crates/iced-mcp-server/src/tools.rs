@@ -17,7 +17,9 @@ use crate::ops::{self, App, Ctx};
 use crate::params::*;
 use crate::record::{self, Recording};
 
-use iced_mcp_protocol::{Request, WindowAction, WindowParams, DEFAULT_PORT};
+use iced_mcp_protocol::{
+    Request, WindowAction, WindowParams, DEFAULT_PORT, ENV_FIXTURE, ENV_FIXTURE_ARGS,
+};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
@@ -63,6 +65,7 @@ Inspect the project first and ask before editing its files.
 3. Optional, for richer tools:
    - `iced_mcp::attach(app).state(|s| format!(\"{s:#?}\")).run()` — enables `state` (leave secrets out).
    - `.action(\"open_settings\", \"Opens settings. No args.\", |_| Ok(Message::OpenSettings))` — enables `run_app_action`.
+   - `.fixture(\"empty\", \"No data. No args.\", |_| Ok(State::default()))` — named starting states for tests (`fixtures`, `load_fixture`, `launch {fixture}`, a flow's `fixture`).
    - Give key widgets ids (`.id(\"search\")`); name icon-only buttons with a tooltip or an accessible label (operate → `operation.custom(None, bounds, &mut label_string)`).
 4. Then `launch` with `cargo run -p <crate> --features agent`.";
 
@@ -323,13 +326,32 @@ async fn start(
     match conn::wait_for_bridge(&mut launched, spec.port, spec.token.clone(), timeout).await {
         Ok(conn) => {
             let name = name.unwrap_or_else(|| conn.info.name.clone());
-            let summary = ops::status_text(&name, &conn, Some(&launched));
             let mut app = App::new(name);
             app.conn = Some(conn);
             app.launched = Some(launched);
             app.token = spec.token.clone();
-            app.spec = Some(spec);
             app.launch = Some(launch);
+            if let Some(name) = spec.env.get(ENV_FIXTURE).cloned() {
+                let args = spec
+                    .env
+                    .get(ENV_FIXTURE_ARGS)
+                    .and_then(|json| serde_json::from_str(json).ok())
+                    .unwrap_or_default();
+                app.spec = Some(spec);
+                if let Err(error) = ops::await_boot_fixture(&mut app, &name).await {
+                    if let Some(launched) = app.launched.as_mut() {
+                        let _ = launched.child.kill().await;
+                    }
+                    return Err(format!("fixture: {error}"));
+                }
+                app.fixture = Some((name, args));
+            } else {
+                app.spec = Some(spec);
+            }
+            let summary = match (&app.conn, &app.launched) {
+                (Some(conn), launched) => ops::status_text(&app.name, conn, launched.as_ref()),
+                _ => String::new(),
+            };
             Ok((
                 app,
                 format!(
@@ -343,6 +365,27 @@ async fn start(
             Err(error)
         }
     }
+}
+
+/// Asks a launch to start the app in `fixture`.
+fn with_fixture(
+    mut spec: LaunchSpec,
+    fixture: Option<&str>,
+    args: Option<&serde_json::Value>,
+) -> LaunchSpec {
+    if let Some(name) = fixture {
+        spec.env.insert(ENV_FIXTURE.to_owned(), name.to_owned());
+        match args.filter(|a| !a.is_null()) {
+            Some(args) => {
+                spec.env
+                    .insert(ENV_FIXTURE_ARGS.to_owned(), args.to_string());
+            }
+            None => {
+                spec.env.remove(ENV_FIXTURE_ARGS);
+            }
+        }
+    }
+    spec
 }
 
 fn spec_for(
@@ -398,7 +441,11 @@ impl Server {
             env: p.env.clone().unwrap_or_default(),
         };
         let outcome = async {
-            let spec = spec_for(&launch, p.args.clone(), None)?;
+            let spec = with_fixture(
+                spec_for(&launch, p.args.clone(), None)?,
+                p.fixture.as_deref(),
+                p.fixture_args.as_ref(),
+            );
             let timeout = Duration::from_secs(p.timeout_secs.unwrap_or(300));
             start(p.name.clone(), spec, launch, timeout).await
         }
@@ -826,7 +873,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Run several steps in one call when you need not look in between: click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, query, expect_query, expect_message, screenshot_diff, expect_no_diagnostics, echo. Stops at the first failure.",
+        description = "Run several steps in one call when you need not look in between: click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, load_fixture, query, expect_query, expect_message, screenshot_diff, expect_no_diagnostics, echo. Stops at the first failure.",
         annotations(open_world_hint = false)
     )]
     async fn run_sequence(&self, Parameters(p): Parameters<SequenceParams>) -> ToolResult {
@@ -1057,6 +1104,27 @@ impl Server {
     }
 
     #[tool(
+        description = "The fixtures the app registered: named states to start a test from (an empty cart, a signed-in user…), with what args each takes.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn fixtures(&self, Parameters(p): Parameters<AppOnly>) -> ToolResult {
+        let mut apps = self.apps.lock().await;
+        let outcome = match apps.get(p.app.as_deref()) {
+            Ok(app) => ops::fixtures(app).await,
+            Err(error) => Err(error),
+        };
+        Self::reply(&apps, outcome)
+    }
+
+    #[tool(
+        description = "Put the app in one of its fixtures (see `fixtures`): a known state, whatever ran before. Replies with the messages it caused. Flows can name a `fixture` instead, and `launch {fixture}` starts an app in one.",
+        annotations(destructive_hint = true, open_world_hint = false)
+    )]
+    async fn load_fixture(&self, Parameters(p): Parameters<FixtureParams>) -> ToolResult {
+        self.action("load_fixture", p.app.as_deref(), &p).await
+    }
+
+    #[tool(
         description = "Run one of the app's registered actions with JSON args; replies with the messages it caused.",
         annotations(open_world_hint = false)
     )]
@@ -1148,8 +1216,8 @@ impl Server {
         if let Err(error) = flow::check_name(&p.name) {
             return Self::reply(&apps, Err(error));
         }
-        let (app_name, launch) = match apps.get(p.app.as_deref()) {
-            Ok(app) => (app.name.clone(), app.launch.clone()),
+        let (app_name, launch, fixture) = match apps.get(p.app.as_deref()) {
+            Ok(app) => (app.name.clone(), app.launch.clone(), app.fixture.clone()),
             Err(error) => return Self::reply(&apps, Err(error)),
         };
         let discarded = apps.draft.as_ref().map_or(0, |d| d.flow.steps.len());
@@ -1161,6 +1229,8 @@ impl Server {
                 schema: None,
                 prerequisite: p.prerequisite.clone(),
                 launch: if end_to_end { launch } else { None },
+                fixture: fixture.as_ref().map(|(name, _)| name.clone()),
+                fixture_args: fixture.and_then(|(_, args)| (!args.is_null()).then_some(args)),
                 steps: Vec::new(),
             },
         });
@@ -1317,7 +1387,11 @@ pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
         Some(launch) => {
             let name = format!("flow-{}", p.name);
             let outcome = async {
-                let spec = spec_for(launch, None, None)?;
+                let spec = with_fixture(
+                    spec_for(launch, None, None)?,
+                    loaded.fixture.as_deref(),
+                    loaded.fixture_args.as_ref(),
+                );
                 start(
                     Some(name.clone()),
                     spec,
@@ -1345,7 +1419,12 @@ pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
             }
         }
         None => {
-            if let Some(prerequisite) = &loaded.prerequisite {
+            // A fixture sets up the state a prerequisite would describe.
+            let prerequisite = loaded
+                .prerequisite
+                .as_ref()
+                .filter(|_| loaded.fixture.is_none());
+            if let Some(prerequisite) = prerequisite {
                 if !p.prerequisite_ok.unwrap_or(false) {
                     let error = format!(
                         "flow {} is a fragment that needs: \"{prerequisite}\". Make that true, then call again with prerequisite_ok=true.",
@@ -1360,6 +1439,32 @@ pub(crate) async fn run_flow(apps: &mut Apps, p: &FlowRunParams) -> FlowRun {
             }
         }
     };
+
+    // A fragment loads its fixture into the app it runs on (an end-to-end
+    // flow started the app in it).
+    if let (Some(fixture), false) = (&loaded.fixture, launched_here) {
+        let params = FixtureParams {
+            app: None,
+            name: fixture.clone(),
+            args: loaded.fixture_args.clone().unwrap_or_default(),
+        };
+        let outcome = match apps.get(Some(&app_name)) {
+            Ok(app) => ops::load_fixture(app, &params).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = outcome {
+            let error = format!("fixture {fixture}: {error}");
+            let failure = bundle::Failure {
+                flow: &p.name,
+                step: "fixture",
+                error: &error,
+            };
+            let path = bundle::write(&root, &failure, &loaded, apps.get(Some(&app_name)).ok())
+                .await
+                .ok();
+            return FlowRun::failed(error, path);
+        }
+    }
 
     let mut reports: Vec<StepReport> = Vec::new();
     let mut bundle_path = None;
@@ -1484,6 +1589,8 @@ mod tests {
             "record_start",
             "audit",
             "diagnose",
+            "fixtures",
+            "load_fixture",
         ] {
             assert!(
                 names.contains(&expected.to_owned()),
@@ -1510,6 +1617,24 @@ mod tests {
         );
         let back: TypeParams = serde_json::from_value(args).unwrap();
         assert_eq!(back.text, "flow item");
+    }
+
+    #[test]
+    fn a_launch_in_a_fixture_sets_its_environment() {
+        let launch = FlowLaunch {
+            command: "my-app --flag".into(),
+            cwd: None,
+            env: std::collections::HashMap::new(),
+        };
+        let spec = spec_for(&launch, None, None).unwrap();
+        assert!(with_fixture(spec.clone(), None, None).env.is_empty());
+        let args = serde_json::json!({ "items": 2 });
+        let spec = with_fixture(spec, Some("full-cart"), Some(&args));
+        assert_eq!(spec.env[ENV_FIXTURE], "full-cart");
+        assert_eq!(spec.env[ENV_FIXTURE_ARGS], r#"{"items":2}"#);
+        let plain = with_fixture(spec, Some("empty"), Some(&serde_json::Value::Null));
+        assert_eq!(plain.env[ENV_FIXTURE], "empty");
+        assert!(!plain.env.contains_key(ENV_FIXTURE_ARGS), "no stale args");
     }
 
     #[test]

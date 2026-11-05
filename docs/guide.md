@@ -34,13 +34,13 @@ tooltip gets a name for free.
 | Look | `snapshot` · `accessibility_tree` · `highlight` · `screenshot` · `inspect_point` · `audit` · `diagnose` | Screen outline; role/name/value and AccessKit-compatible tree for widgets and canvas semantics, with per-window coverage counts; temporary live target outline; PNG of a window/node/region, optionally highlighted; point inspection; semantic gaps; layout findings (see [Layout diagnostics](#layout-diagnostics)) |
 | Act | `click` · `type_text` · `paste` · `press_key` · `scroll` · `drag` · `hover` · `window` | Targets: `id`, `text` (substring or `exact`), `ref`, or `x`/`y`. Every action **waits for the screen to settle** and replies with the **messages the app published** |
 | Wait | `wait_for` · `wait_idle` | Until text/id appears or disappears; until the screen stops changing |
-| App side | `messages` · `logs` · `state` · `perf` · `clipboard` · `app_actions` · `run_app_action` · `query` | Message log; stdout/stderr with a cursor and character budget; the app's state; frame/view/update timings; clipboard; actions and read-only queries the app registered (`app_actions` returns complete output schemas in structured content; queries answer JSON, also as MCP `structuredContent`) |
+| App side | `messages` · `logs` · `state` · `perf` · `clipboard` · `app_actions` · `run_app_action` · `query` · `fixtures` · `load_fixture` | Message log; stdout/stderr with a cursor and character budget; the app's state; frame/view/update timings; clipboard; actions and read-only queries the app registered (`app_actions` returns complete output schemas in structured content; queries answer JSON, also as MCP `structuredContent`); the app's named starting states (see [Fixtures](#fixtures)) |
 | Regression | `screenshot_diff` · `flow_start` · `flow_add_step` · `flow_finish` · `flow_run` | Visual baselines; record a session as a flow and replay it as a test |
 | Batch & video | `run_sequence` · `record_start` · `record_stop` | Several steps in one call; screen recording to mp4 |
 
 `run_sequence`, `flow_add_step` and flows share one step vocabulary: `click`,
 `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `wait_for`,
-`wait_idle`, `sleep`, `run_app_action`, `query`, `expect_query` (an assertion
+`wait_idle`, `sleep`, `run_app_action`, `load_fixture`, `query`, `expect_query` (an assertion
 on a query's JSON), `expect_message` (an assertion that a message containing
 some text arrives), `screenshot_diff`, `expect_no_diagnostics` (an assertion
 that `diagnose` finds nothing, optionally of some `kinds`) and `echo`.
@@ -218,7 +218,8 @@ iced-mcp run-suite [--root DIR] [--only GLOB]… [--repeat N | --until-fail N]
 times; `--until-fail N` runs it up to N times and stops after the first round
 with a failure (for hunting flaky flows). End-to-end flows launch their own
 app. Fragments (no `launch`) need one: `--launch CMD` starts it once, runs
-every fragment on it and relaunches it if it dies.
+every fragment on it and relaunches it if it dies; give each fragment a
+`fixture` so it does not depend on what ran before it.
 
 **Failure bundles.** When a step fails (in `flow_run`, `run-flow` or
 `run-suite`), the run captures the app while it is still up into
@@ -277,9 +278,51 @@ iced_mcp::attach(app)
 
 An action returns the message that performs it, which then goes through your
 `update` like any other — it cannot do anything your messages cannot. Use
-actions for what has no widget: opening a scene, loading a fixture, flipping a
+actions for what has no widget: opening a scene, flipping a
 feature. `iced_mcp::run_with_state(app, describe)` is the one-line form for
 state alone.
+
+## Fixtures
+
+A fixture is a named state the app can be put in — an empty cart, a
+signed-in user, a chart with a year of data — so a test starts from a known
+place instead of from whatever the previous one left:
+
+```rust
+iced_mcp::attach(app)
+    .fixture("empty-cart", "An empty cart. No args.", |_| Ok(Shop::default()))
+    .fixture("full-cart", "Args: {\"items\": n}.", |args| {
+        let n = args["items"].as_u64().ok_or("needs {\"items\": n}")? as usize;
+        Ok(Shop::with_items(n))
+    })
+    .fixture_messages("signed-out", "No user. No args.", |_| Ok(vec![Message::SignOut]))
+    .run()
+```
+
+- `fixture` builds a **fresh state** and replaces the app's with it: nothing
+  from before survives, which is what makes tests independent. Prefer it.
+- `fixture_messages` returns the **messages** that reach the state, sent
+  through `update` in order — for state that cannot be built from outside.
+  They must undo whatever an earlier test left, or the fixture isolates
+  nothing.
+
+Using them:
+
+- `fixtures` lists them (they also show in `app_actions` as kind `fixture`);
+  `load_fixture {name, args}` loads one into the running app (also a
+  `run_sequence`/flow step).
+- `launch {command, fixture, fixture_args}` starts the app in one: the
+  server sets `ICED_MCP_FIXTURE` (and `ICED_MCP_FIXTURE_ARGS`, JSON) and
+  waits until the bridge reports it loaded. Any app run under
+  `iced_mcp::run` honours the variables, so
+  `ICED_MCP=1 ICED_MCP_FIXTURE=full-cart cargo run` works by hand too. The
+  start-up fixture loads after the app's boot task finishes, so the app's
+  own start-up work cannot overwrite it.
+- A flow's `"fixture"` (and `"fixture_args"`) is loaded before its first
+  step: an end-to-end flow starts its app in it; a fragment loads it into
+  the app it runs on. A flow recorded on an app launched in a fixture keeps
+  it. A fragment with a fixture needs no `prerequisite_ok`: the fixture is
+  its prerequisite.
 
 ## Performance
 
@@ -350,7 +393,7 @@ sides:
 
 | Protocol | Changes |
 |---|---|
-| 6 | `text_fit` on text nodes (layout diagnostics) |
+| 6 | `text_fit` on text nodes (layout diagnostics); fixtures (`fixture` request, `fixture` action kind, `fixture`/`fixture_error` in `hello`) |
 | 5 | Direct widget operations for focus/text selection, including overlays |
 | 4 | Read-only app queries (`query`, `expect_query`, `query_with_schema`); canvas semantics (`iced-mcp/semantics@1`, `semantic` nodes); JSON Schemas for semantics and flows; `iced-mcp run-flow` for CI; clickable matches win over drawn ones |
 | 3 | `perf`, `state`, `clipboard`, app `actions`; server: multiple apps, settling after actions, `wait_idle`, `screenshot_diff`, flows, screen recording, `inspect_point`, `audit`, `paste`, `restart`, `setup_help`, log cursors |
@@ -364,6 +407,8 @@ sides:
 | `ICED_MCP` | `1` enables the bridge under `iced_mcp::run` |
 | `ICED_MCP_PORT` | Port (default 9339; `launch` picks a free one) |
 | `ICED_MCP_TOKEN` | Require this token on connect |
+| `ICED_MCP_FIXTURE` | Load this fixture once the app has booted (`launch {fixture}` sets it) |
+| `ICED_MCP_FIXTURE_ARGS` | The fixture's args, as JSON |
 
 ## Roadmap
 

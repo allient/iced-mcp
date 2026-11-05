@@ -42,6 +42,15 @@ pub(crate) struct Flow {
     /// How to start the app, for an end-to-end flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) launch: Option<FlowLaunch>,
+    /// The fixture (a named app state, see `fixtures`) loaded before the
+    /// first step: an end-to-end flow starts the app in it, a fragment
+    /// loads it into the connected app. It makes the flow independent of
+    /// whatever ran before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fixture: Option<String>,
+    /// The fixture's args.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fixture_args: Option<serde_json::Value>,
     pub(crate) steps: Vec<FlowStep>,
 }
 
@@ -75,6 +84,7 @@ pub(crate) const STEP_ACTIONS: &[&str] = &[
     "wait_idle",
     "sleep",
     "run_app_action",
+    "load_fixture",
     "expect_message",
     "query",
     "expect_query",
@@ -269,6 +279,8 @@ mod tests {
             schema: None,
             prerequisite: Some("todos is open".into()),
             launch: None,
+            fixture: None,
+            fixture_args: None,
             steps: vec![FlowStep {
                 action: "click".into(),
                 args: serde_json::json!({ "text": "Add" }),

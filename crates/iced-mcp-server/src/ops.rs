@@ -44,6 +44,8 @@ pub(crate) struct App {
     pub(crate) token: Option<String>,
     /// The latest snapshot per window, for `ref` targets.
     pub(crate) snapshots: HashMap<String, Snapshot>,
+    /// The fixture it was launched in, for flows recorded on it.
+    pub(crate) fixture: Option<(String, serde_json::Value)>,
 }
 
 impl App {
@@ -56,6 +58,7 @@ impl App {
             launch: None,
             token: None,
             snapshots: HashMap::new(),
+            fixture: None,
         }
     }
 }
@@ -88,6 +91,7 @@ pub(crate) async fn run_step(app: &mut App, ctx: &Ctx, step: &Step) -> Result<St
         "wait_for" => wait_for(app, &args(&step.args)?).await,
         "wait_idle" => wait_idle(app, &args(&step.args)?).await,
         "run_app_action" => run_app_action(app, &args(&step.args)?).await,
+        "load_fixture" => load_fixture(app, &args(&step.args)?).await,
         "expect_message" => expect_message(app, &args(&step.args)?).await,
         "query" => query_text(app, &args(&step.args)?).await,
         "expect_query" => expect_query(app, &args(&step.args)?).await,
@@ -1661,6 +1665,9 @@ pub(crate) fn status_text(name: &str, conn: &Conn, launched: Option<&Launched>) 
     if !info.messages {
         text.push_str(" Message log off.");
     }
+    if let Some(fixture) = &info.fixture {
+        let _ = write!(text, " Fixture: {fixture}.");
+    }
     for window in &info.windows {
         let _ = write!(
             text,
@@ -2025,6 +2032,7 @@ pub(crate) async fn app_actions_value(app: &mut App) -> Result<serde_json::Value
                 let kind = match a.kind {
                     ActionKind::Action => "action",
                     ActionKind::Query => "query",
+                    ActionKind::Fixture => "fixture",
                 };
                 let mut value = serde_json::json!({
                     "name": a.name,
@@ -2068,6 +2076,81 @@ pub(crate) async fn run_app_action(app: &mut App, p: &AppActionParams) -> Result
         }
     }
     Ok(text)
+}
+
+/// The fixtures the app registered: name and description.
+pub(crate) async fn fixtures(app: &mut App) -> Result<String, String> {
+    let Response::Actions(list) = request(app, Request::Actions).await? else {
+        return Err("unexpected reply to actions".into());
+    };
+    let fixtures: Vec<_> = list
+        .actions
+        .iter()
+        .filter(|a| a.kind == ActionKind::Fixture)
+        .collect();
+    if fixtures.is_empty() {
+        return Ok("The app registers no fixtures. Add them with `iced_mcp::attach(app).fixture(name, description, |args| Ok(State::…))`.".into());
+    }
+    let mut text = format!("{} fixture(s):\n", fixtures.len());
+    for fixture in fixtures {
+        let _ = writeln!(text, "  {} — {}", fixture.name, fixture.description);
+    }
+    text.push_str("Load one with load_fixture, start an app in one with launch {fixture}, or name one in a flow's `fixture`.");
+    Ok(text)
+}
+
+/// Puts the app in a fixture, waits for it to settle and reports the
+/// messages that caused.
+pub(crate) async fn load_fixture(app: &mut App, p: &FixtureParams) -> Result<String, String> {
+    let before = read_messages(app, Some(u64::MAX), None, Some(1))
+        .await
+        .ok()
+        .map(|log| log.last);
+    request(
+        app,
+        Request::Fixture(ActionParams {
+            name: p.name.clone(),
+            args: p.args.clone(),
+        }),
+    )
+    .await?;
+    let _ = settle(app, None, ACTION_STABLE, ACTION_SETTLE_CAP).await;
+    let mut text = format!("Loaded fixture {}.", p.name);
+    if let Some(since) = before {
+        let log = read_messages(app, Some(since), None, Some(200)).await?;
+        if !log.entries.is_empty() {
+            let _ = write!(
+                text,
+                "\n{} message(s):\n{}",
+                log.entries.len(),
+                summarize_messages(&log, 16)
+            );
+        }
+    }
+    Ok(text)
+}
+
+/// After a launch with `ICED_MCP_FIXTURE`: waits until the bridge says the
+/// fixture is loaded (it loads once the app's boot work is done).
+pub(crate) async fn await_boot_fixture(app: &mut App, name: &str) -> Result<(), String> {
+    let token = app.token.clone();
+    let started = Instant::now();
+    loop {
+        let info = conn(app)?.hello(token.clone()).await?.clone();
+        if let Some(error) = info.fixture_error {
+            return Err(error);
+        }
+        if info.fixture.as_deref() == Some(name) {
+            let _ = settle(app, None, ACTION_STABLE, ACTION_SETTLE_CAP).await;
+            return Ok(());
+        }
+        if started.elapsed() > Duration::from_secs(15) {
+            return Err(format!(
+                "fixture {name} was not loaded within 15 s: it loads after the app's boot task finishes"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Waits for a message containing `contains` — the assertion that the app

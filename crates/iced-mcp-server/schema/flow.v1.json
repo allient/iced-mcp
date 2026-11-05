@@ -11,6 +11,16 @@
         "null"
       ]
     },
+    "fixture": {
+      "description": "The fixture (a named app state, see `fixtures`) loaded before the\nfirst step: an end-to-end flow starts the app in it, a fragment\nloads it into the connected app. It makes the flow independent of\nwhatever ran before.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fixture_args": {
+      "description": "The fixture's args."
+    },
     "launch": {
       "description": "How to start the app, for an end-to-end flow.",
       "anyOf": [

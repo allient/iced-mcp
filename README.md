@@ -86,7 +86,7 @@ login form"*. It starts the app itself.
 | **Look** | `snapshot` (what's on screen, with ids, text and what's clickable), `screenshot`, `accessibility_tree`, `inspect_point`, `audit` (unnamed controls), `diagnose` (overlaps, clipping, text that doesn't fit, duplicate ids) |
 | **Act** | `click`, `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `window`, all by id, text or position |
 | **Wait** | `wait_for` text or an id, `wait_idle` until the screen settles |
-| **Ask the app** | `messages`, `logs`, `state`, `query`, `run_app_action`, `perf` (frame, view and update timings), `clipboard` |
+| **Ask the app** | `messages`, `logs`, `state`, `query`, `run_app_action`, `perf` (frame, view and update timings), `clipboard`, `fixtures` and `load_fixture` (named starting states for tests) |
 | **Test** | `flow_start` → `flow_finish` → `flow_run`, `screenshot_diff`, `run_sequence`, screen recording; `iced-mcp run-suite` runs them all in CI and keeps a failure bundle (tree, diagnostics, screenshot, logs) per failure |
 | **Sessions** | `launch`, `connect`, `restart`, several apps at once |
 
@@ -111,6 +111,7 @@ iced_mcp::attach(app)
     .state(|state| format!("{state:#?}"))                  // what the app holds
     .action("load_demo", "Loads demo data.", |_| Ok(Message::LoadDemo))
     .query("total", "The cart total.", |state, _| Ok(serde_json::json!(state.total())))
+    .fixture("empty-cart", "An empty cart.", |_| Ok(State::default())) // where tests start
     .run()
 ```
 

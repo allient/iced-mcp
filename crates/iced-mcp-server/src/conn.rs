@@ -43,6 +43,8 @@ impl Conn {
                 pid: 0,
                 windows: Vec::new(),
                 messages: false,
+                fixture: None,
+                fixture_error: None,
             },
             reader: BufReader::new(read),
             writer: write,

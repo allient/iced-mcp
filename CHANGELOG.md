@@ -19,6 +19,12 @@ All notable changes to iced-mcp. The three crates share one version.
   `.iced-mcp/failures/<flow>-<timestamp>/` with the tree, diagnostics,
   screenshot, step log, app output and recent messages; `flow_run` and the
   CLIs report its path.
+- **Fixtures**: `attach(app).fixture(name, description, |args| Ok(state))`
+  (or `fixture_messages`) registers named starting states. MCP `fixtures`
+  and `load_fixture`, `launch {fixture, fixture_args}` and
+  `ICED_MCP_FIXTURE`/`ICED_MCP_FIXTURE_ARGS` start an app in one, and a
+  flow's `fixture` is loaded before its first step. The todos example has
+  `empty` and `groceries`.
 
 ### Changed
 

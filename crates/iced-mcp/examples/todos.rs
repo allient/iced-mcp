@@ -2,7 +2,9 @@
 //! overlay), a checkbox list in a scrollable and a counter.
 //!
 //! `ICED_MCP=1 cargo run -p iced-mcp --example todos`, then point an agent at
-//! the `iced-mcp` server (or `launch` it from there).
+//! the `iced-mcp` server (or `launch` it from there). Fixtures: `empty`, and
+//! `groceries` (three items, the second done); `ICED_MCP_FIXTURE=groceries`
+//! starts in one.
 
 use iced::widget::{
     button, checkbox, column, container, pick_list, row, scrollable, text, text_input,
@@ -140,6 +142,29 @@ fn main() -> iced::Result {
                     .map(|(text, done)| serde_json::json!({ "text": text, "done": done }))
                     .collect();
                 Ok(serde_json::json!(items))
+            },
+        )
+        // Named starting states for tests: each replaces the whole state.
+        .fixture("empty", "No todos. No args.", |_| Ok(Todos::default()))
+        .fixture(
+            "groceries",
+            "Three todos (milk, eggs done, bread). Args: {\"filter\": \"All\"|\"Open\"|\"Done\"} (optional).",
+            |args| {
+                let filter = match args.get("filter").and_then(|f| f.as_str()) {
+                    None | Some("All") => Filter::All,
+                    Some("Open") => Filter::Open,
+                    Some("Done") => Filter::Done,
+                    Some(other) => return Err(format!("unknown filter {other:?}")),
+                };
+                Ok(Todos {
+                    items: vec![
+                        ("milk".into(), false),
+                        ("eggs".into(), true),
+                        ("bread".into(), false),
+                    ],
+                    filter,
+                    ..Todos::default()
+                })
             },
         )
         .action(

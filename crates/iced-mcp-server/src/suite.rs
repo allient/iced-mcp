@@ -335,6 +335,8 @@ mod tests {
                 schema: None,
                 prerequisite: None,
                 launch: None,
+                fixture: None,
+                fixture_args: None,
                 steps: Vec::new(),
             },
         )
