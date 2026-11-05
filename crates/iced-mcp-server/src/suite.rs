@@ -281,7 +281,7 @@ pub(crate) async fn run(apps: &Arc<Mutex<Apps>>, options: &Options) -> (i32, Str
                         Ok(mut script) => {
                             script.app = app;
                             script.update_baselines = options.update_baselines;
-                            let outcome = script::run(apps.clone(), script).await;
+                            let outcome = script::run(apps.clone(), script, None).await;
                             let line = outcome
                                 .error
                                 .as_ref()

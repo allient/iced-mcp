@@ -7,19 +7,23 @@
 //! `loadstring`, `getfenv`/`setfenv`, files or network. The only way out is
 //! the `app` / `apps` globals, which reach the connected apps through the
 //! same step functions as `run_sequence` and flows ([`ops::run_step`]). A
-//! wall-clock deadline is enforced by Luau's interrupt (loops and calls) and
-//! around every app call; memory and output are capped.
+//! wall-clock deadline is enforced by Luau's interrupt (loops and calls),
+//! around every app call and, as a last resort, by killing the worker
+//! process; memory, output and the return value are capped.
 //!
-//! **Async bridging.** The step functions are async and need the shared
-//! [`Apps`] behind a tokio mutex, while an `mlua::Lua` is neither `Send` nor
-//! async here. Each script therefore runs on its own OS thread that owns the
-//! VM; an app call blocks that thread on [`Handle::block_on`] of the server's
-//! multi-threaded runtime, which locks `Apps` for that one call only. So a
-//! long script never parks a runtime worker, and other MCP requests (other
-//! tools, other scripts) interleave between its steps exactly as they do
-//! between separate tool calls. The tool awaits the script's result on a
-//! oneshot channel; dropping that wait (the request is cancelled) sets a
-//! flag the interrupt and the next app call honour.
+//! **Process.** The VM runs in a child process, `iced-mcp script-worker`
+//! ([`worker`]), which has no app and no files: each `app:method(...)` is a
+//! message to the server, which runs the step (locking the shared [`Apps`]
+//! for that one call, so other MCP requests interleave between a script's
+//! steps) and sends back the result. The server waits on the worker's
+//! messages asynchronously and kills the process at the deadline plus
+//! [`GRACE`], or as soon as the request is cancelled, whatever the script
+//! is doing: even a built-in call that never returns to the interpreter
+//! (a plain `string.find` over megabytes) cannot outlive its deadline.
+//! A thread could not be stopped there, only abandoned, still burning a
+//! core.
+
+pub(crate) mod worker;
 
 use crate::bundle;
 use crate::flow::{self, FlowStep};
@@ -28,17 +32,16 @@ use crate::params::*;
 use crate::tools::Apps;
 use crate::view::{self, Selector};
 
-use mlua::{Lua, LuaOptions, LuaSerdeExt, MultiValue, StdLib, Value, VmState};
 use serde::Serialize;
-use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::future::Future;
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+use worker::{ToHost, ToWorker};
 
 /// The typed API reference (`script_api`), also what scripts are checked
 /// against.
@@ -85,6 +88,28 @@ const MAX_SLEEP_MS: u64 = 30_000;
 /// The environment variable naming the type checker.
 pub(crate) const ENV_ANALYZE: &str = "ICED_MCP_LUAU_ANALYZE";
 const ANALYZE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long past its deadline a script's worker may take to stop on its
+/// own before it is killed.
+pub(crate) const GRACE: Duration = Duration::from_secs(2);
+/// The largest return value, as JSON bytes.
+pub(crate) const RETURN_LIMIT: usize = 1024 * 1024;
+/// The longest message a worker may send.
+const MAX_LINE: usize = 2 * RETURN_LIMIT;
+/// Scripts `script_eval` runs at once.
+pub(crate) const MAX_SCRIPTS: usize = 4;
+/// The hidden subcommand that runs a worker.
+pub(crate) const WORKER_COMMAND: &str = "script-worker";
+
+/// Where a script's VM runs.
+#[derive(Debug, Clone)]
+pub(crate) enum Worker {
+    /// `<exe> script-worker`: the server's own binary.
+    Process(PathBuf),
+    /// A thread in this process (unit tests, whose binary is the test
+    /// harness): it cannot be killed.
+    #[cfg(test)]
+    Thread,
+}
 
 /// What to run and within which limits.
 #[derive(Debug, Clone)]
@@ -100,6 +125,7 @@ pub(crate) struct Script {
     pub(crate) update_baselines: bool,
     /// Skip `luau-analyze` (tests).
     pub(crate) typecheck: bool,
+    pub(crate) worker: Worker,
 }
 
 impl Script {
@@ -113,6 +139,9 @@ impl Script {
             output: DEFAULT_OUTPUT,
             update_baselines: false,
             typecheck: true,
+            worker: Worker::Process(
+                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("iced-mcp")),
+            ),
         }
     }
 }
@@ -295,11 +324,11 @@ impl Outcome {
     }
 }
 
-/// Type-checks, then runs `script` on its own thread against `apps`. On a
-/// failure, writes a bundle from the app the script last used.
-pub(crate) async fn run(apps: Arc<Mutex<Apps>>, script: Script) -> Outcome {
+/// Type-checks, then runs `script` against `apps`. On a failure, writes a
+/// bundle from the app the script last used. `cancel` resolving stops it.
+pub(crate) async fn run(apps: Arc<Mutex<Apps>>, script: Script, cancel: Option<Cancel>) -> Outcome {
     match precheck(&script).await {
-        Ok(typecheck) => run_checked(apps, script, typecheck).await,
+        Ok(typecheck) => run_checked(apps, script, typecheck, cancel).await,
         Err(failed) => *failed,
     }
 }
@@ -335,52 +364,110 @@ pub(crate) async fn precheck(script: &Script) -> Result<TypeCheck, Box<Outcome>>
     Ok(typecheck)
 }
 
-/// Runs a script [`precheck`] passed.
+/// Something that resolves when the caller gives up (an MCP request was
+/// cancelled).
+pub(crate) type Cancel = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Runs a script [`precheck`] passed: starts its worker, answers its app
+/// calls, and kills it at the deadline plus [`GRACE`] or on `cancel`,
+/// whatever it is doing.
 pub(crate) async fn run_checked(
     apps: Arc<Mutex<Apps>>,
     script: Script,
     typecheck: TypeCheck,
+    cancel: Option<Cancel>,
 ) -> Outcome {
     let started = Instant::now();
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let _cancel_on_drop = CancelOnDrop(cancelled.clone());
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    let deadline = started + script.timeout;
+    let chunk = script.name.clone();
     let host = Host {
         apps: apps.clone(),
-        handle: Handle::current(),
-        deadline: started + script.timeout,
+        deadline,
         timeout: script.timeout,
-        cancelled,
-        chunk: script.name.clone(),
         default_app: script.app.clone(),
         update_baselines: script.update_baselines,
-        output_limit: script.output,
-        output: RefCell::new(String::new()),
-        output_cut: RefCell::new(false),
-        steps: RefCell::new(Vec::new()),
-        last_app: RefCell::new(None),
     };
-    let thread_script = script.clone();
-    let spawned = std::thread::Builder::new()
-        .name("iced-mcp-luau".into())
-        .spawn(move || {
-            let result = execute(host, &thread_script);
-            let _ = tx.send(result);
-        });
-    let finished = match spawned {
-        Ok(_) => rx.await.map_err(|_| "the script thread stopped".to_owned()),
-        Err(error) => Err(format!("cannot start the script thread: {error}")),
+    let mut output = Output::new(script.output);
+    let mut steps: Vec<StepLog> = Vec::new();
+    let mut last_app: Option<String> = None;
+    let mut cancel = cancel.unwrap_or_else(|| Box::pin(std::future::pending()));
+    let hard_deadline = tokio::time::sleep_until((deadline + GRACE).into());
+    tokio::pin!(hard_deadline);
+    let killed = format!(
+        "{chunk}: the script timed out after {} ms and its process was killed: it was busy in a built-in call that does not check the deadline (a huge string.find, a backtracking pattern…)",
+        script.timeout.as_millis()
+    );
+    let cancelled = format!("{chunk}: the script was cancelled");
+
+    let result: Result<serde_json::Value, String> = match Session::spawn(&script.worker) {
+        Err(error) => Err(format!("{chunk}: cannot start the script worker: {error}")),
+        Ok(mut session) => {
+            let start = worker::Start {
+                name: script.name.clone(),
+                source: script.source.clone(),
+                app: script.app.clone(),
+                memory: script.memory,
+                output: script.output,
+                return_limit: RETURN_LIMIT,
+                timeout_ms: u64::try_from(script.timeout.as_millis()).unwrap_or(u64::MAX),
+                methods: METHODS.iter().map(|m| (*m).to_owned()).collect(),
+            };
+            session.send(&start);
+            let result = loop {
+                let message = tokio::select! {
+                    message = session.rx.recv() => message,
+                    () = &mut hard_deadline => break Err(killed.clone()),
+                    () = &mut cancel => break Err(cancelled.clone()),
+                };
+                match message {
+                    None => break Err(format!("{chunk}: {}", session.exit_reason())),
+                    Some(Err(error)) => break Err(format!("{chunk}: {error}")),
+                    Some(Ok(ToHost::Print(text))) => output.push(&text),
+                    Some(Ok(ToHost::Done(value))) => break Ok(value),
+                    Some(Ok(ToHost::Failed(message))) => break Err(message),
+                    Some(Ok(ToHost::Call {
+                        app,
+                        method,
+                        line,
+                        args,
+                    })) => {
+                        let call_started = Instant::now();
+                        let mut logged = None;
+                        let reply = tokio::select! {
+                            reply = host.call(app.as_deref(), &method, args, &mut logged, &mut last_app) => reply,
+                            () = &mut cancel => break Err(cancelled.clone()),
+                        };
+                        if let Some((action, args)) = logged {
+                            steps.push(StepLog {
+                                line,
+                                app: last_app.clone(),
+                                action: method.clone(),
+                                label: flow::label(&FlowStep { action, args }),
+                                ok: reply.is_ok(),
+                                ms: elapsed_ms(call_started),
+                            });
+                        }
+                        session.send(&match reply {
+                            Ok(value) => ToWorker::Ok(value),
+                            Err(message) => ToWorker::Err(match line {
+                                Some(line) => format!("{chunk}:{line}: {message}"),
+                                None => format!("{chunk}: {message}"),
+                            }),
+                        });
+                    }
+                }
+            };
+            session.stop();
+            result
+        }
     };
-    let (output, value, steps, last_app, error) = match finished {
-        Ok(done) => done,
+    let (value, error) = match result {
+        Ok(value) => (value, None),
         Err(message) => (
-            String::new(),
             serde_json::Value::Null,
-            Vec::new(),
-            None,
             Some(ScriptError {
+                line: line_of(&message, &chunk),
                 message,
-                line: None,
             }),
         ),
     };
@@ -407,7 +494,7 @@ pub(crate) async fn run_checked(
     }
     let outcome = Outcome {
         ok: error.is_none(),
-        output,
+        output: output.text,
         value,
         steps,
         duration_ms: elapsed_ms(started),
@@ -446,64 +533,192 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-struct CancelOnDrop(Arc<AtomicBool>);
+/// What the script printed, cut at its limit.
+struct Output {
+    text: String,
+    limit: usize,
+    cut: bool,
+}
 
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
+impl Output {
+    fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            limit,
+            cut: false,
+        }
+    }
+
+    fn push(&mut self, line: &str) {
+        if self.cut {
+            return;
+        }
+        if self.text.len() + line.len() + 1 > self.limit {
+            let room = self.limit.saturating_sub(self.text.len());
+            let mut cut = room.min(line.len());
+            while !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.text.push_str(&line[..cut]);
+            let _ = write!(self.text, "\n… output cut at {} bytes", self.limit);
+            self.cut = true;
+        } else {
+            self.text.push_str(line);
+            self.text.push('\n');
+        }
     }
 }
 
-type Finished = (
-    String,
-    serde_json::Value,
-    Vec<StepLog>,
-    Option<String>,
-    Option<ScriptError>,
-);
+/// A running worker: its messages, and the way to answer and stop it.
+struct Session {
+    rx: tokio::sync::mpsc::Receiver<Result<ToHost, String>>,
+    writer: Option<Box<dyn Write + Send>>,
+    child: Option<std::process::Child>,
+}
 
-/// What app calls need, owned by the script thread.
+impl Session {
+    fn spawn(worker: &Worker) -> Result<Self, String> {
+        let (reader, writer, child): (Box<dyn Read + Send>, Box<dyn Write + Send>, _) = match worker
+        {
+            Worker::Process(exe) => {
+                let mut child = std::process::Command::new(exe)
+                    .arg(WORKER_COMMAND)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("{}: {e}", exe.display()))?;
+                let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+                    let _ = child.kill();
+                    return Err("no pipes to the worker".into());
+                };
+                (Box::new(stdout), Box::new(stdin), Some(child))
+            }
+            #[cfg(test)]
+            Worker::Thread => {
+                // pipe() is (read end, write end).
+                let (worker_reads, server_writes) = std::io::pipe().map_err(|e| e.to_string())?;
+                let (server_reads, worker_writes) = std::io::pipe().map_err(|e| e.to_string())?;
+                std::thread::spawn(move || {
+                    worker::main(std::io::BufReader::new(worker_reads), worker_writes)
+                });
+                (Box::new(server_reads), Box::new(server_writes), None)
+            }
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        std::thread::Builder::new()
+            .name("iced-mcp-script-reader".into())
+            .spawn(move || read_messages(reader, &tx))
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            rx,
+            writer: Some(writer),
+            child,
+        })
+    }
+
+    /// Sends one message; a worker that is gone shows up as the end of its
+    /// messages.
+    fn send(&mut self, message: &impl Serialize) {
+        let Some(writer) = self.writer.as_mut() else {
+            return;
+        };
+        let Ok(mut line) = serde_json::to_string(message) else {
+            return;
+        };
+        line.push('\n');
+        if writer
+            .write_all(line.as_bytes())
+            .and_then(|()| writer.flush())
+            .is_err()
+        {
+            self.writer = None;
+        }
+    }
+
+    fn exit_reason(&mut self) -> String {
+        match self.child.as_mut().map(|c| c.wait()) {
+            Some(Ok(status)) => format!("the script worker exited unexpectedly ({status})"),
+            _ => "the script worker stopped unexpectedly".into(),
+        }
+    }
+
+    /// Closes its input and kills it if it still runs.
+    fn stop(&mut self) {
+        self.writer = None;
+        if let Some(child) = self.child.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Reads the worker's lines into `tx`, refusing any longer than [`MAX_LINE`].
+fn read_messages(
+    reader: Box<dyn Read + Send>,
+    tx: &tokio::sync::mpsc::Sender<Result<ToHost, String>>,
+) {
+    let mut reader = std::io::BufReader::new(reader);
+    loop {
+        let mut line = Vec::new();
+        let limit = u64::try_from(MAX_LINE + 1).unwrap_or(u64::MAX);
+        match (&mut reader).take(limit).read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let message = if line.len() > MAX_LINE {
+            Err(format!(
+                "the script sent a message over {} KiB (print or return less)",
+                MAX_LINE / 1024
+            ))
+        } else {
+            serde_json::from_slice::<ToHost>(&line)
+                .map_err(|e| format!("bad message from the script worker: {e}"))
+        };
+        let last = message.is_err();
+        if tx.blocking_send(message).is_err() || last {
+            return;
+        }
+    }
+}
+
+/// What app calls need: the apps, the deadline, the defaults.
 struct Host {
     apps: Arc<Mutex<Apps>>,
-    handle: Handle,
     deadline: Instant,
     timeout: Duration,
-    cancelled: Arc<AtomicBool>,
-    chunk: String,
     default_app: Option<String>,
     update_baselines: bool,
-    output_limit: usize,
-    output: RefCell<String>,
-    output_cut: RefCell<bool>,
-    steps: RefCell<Vec<StepLog>>,
-    last_app: RefCell<Option<String>>,
 }
 
 impl Host {
-    /// Why the script must stop now, if it must.
-    fn stop_reason(&self) -> Option<String> {
-        if self.cancelled.load(Ordering::Relaxed) {
-            return Some("the script was cancelled".into());
-        }
-        (Instant::now() >= self.deadline).then(|| {
-            format!(
-                "the script timed out after {} ms (raise timeout_ms)",
-                self.timeout.as_millis()
-            )
-        })
+    fn timed_out(&self) -> String {
+        format!(
+            "the script timed out after {} ms (raise timeout_ms)",
+            self.timeout.as_millis()
+        )
     }
 
     /// Runs `f` on the app `name` means, holding the apps lock for this one
     /// call, within what is left of the deadline.
-    fn with_app<T>(
+    async fn with_app<T>(
         &self,
         name: Option<&str>,
+        last_app: &mut Option<String>,
         f: impl AsyncFnOnce(&mut App, &Ctx) -> Result<T, String>,
     ) -> Result<T, String> {
-        if let Some(reason) = self.stop_reason() {
-            return Err(reason);
-        }
         let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(self.timed_out());
+        }
         let name = name.map(str::to_owned).or_else(|| self.default_app.clone());
         let work = async {
             let mut apps = self.apps.lock().await;
@@ -512,191 +727,334 @@ impl Host {
                 update_baselines: self.update_baselines,
             };
             let app = apps.get(name.as_deref())?;
-            *self.last_app.borrow_mut() = Some(app.name.clone());
+            *last_app = Some(app.name.clone());
             f(app, &ctx).await
         };
-        self.handle
-            .block_on(async { tokio::time::timeout(left, work).await })
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "the script timed out after {} ms (raise timeout_ms)",
-                    self.timeout.as_millis()
-                ))
+        tokio::time::timeout(left, work)
+            .await
+            .unwrap_or_else(|_| Err(self.timed_out()))
+    }
+
+    /// A step from the shared vocabulary, run through `ops::run_step`; its
+    /// reply as a JSON string.
+    async fn step(
+        &self,
+        app: Option<&str>,
+        action: &str,
+        args: serde_json::Value,
+        logged: &mut Option<(String, serde_json::Value)>,
+        last_app: &mut Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        *logged = Some((action.to_owned(), args.clone()));
+        let step = Step {
+            action: action.to_owned(),
+            args,
+        };
+        let text = self
+            .with_app(app, last_app, async |app, ctx| {
+                ops::run_step(app, ctx, &step).await
             })
+            .await?;
+        Ok(serde_json::Value::String(text))
     }
 
-    fn print(&self, text: &str) {
-        if *self.output_cut.borrow() {
-            return;
-        }
-        let mut output = self.output.borrow_mut();
-        if output.len() + text.len() + 1 > self.output_limit {
-            let room = self.output_limit.saturating_sub(output.len());
-            let mut cut = room.min(text.len());
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
+    /// One `app:method(a, b)` call: its result as JSON, or why it failed.
+    #[allow(clippy::too_many_lines)]
+    async fn call(
+        &self,
+        app: Option<&str>,
+        method: &str,
+        args: Vec<serde_json::Value>,
+        logged: &mut Option<(String, serde_json::Value)>,
+        last_app: &mut Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let mut args = args.into_iter();
+        let first = args.next().unwrap_or_default();
+        let second = args.next().unwrap_or_default();
+        match method {
+            "click" | "hover" | "type_text" | "paste" | "wait_for" => {
+                self.step(app, method, args_or(first, "text")?, logged, last_app)
+                    .await
             }
-            output.push_str(&text[..cut]);
-            let _ = write!(output, "\n… output cut at {} bytes", self.output_limit);
-            *self.output_cut.borrow_mut() = true;
-        } else {
-            output.push_str(text);
-            output.push('\n');
+            "press_key" => {
+                self.step(app, method, args_or(first, "keys")?, logged, last_app)
+                    .await
+            }
+            "scroll"
+            | "drag"
+            | "wait_idle"
+            | "expect_pixel"
+            | "expect_no_diagnostics"
+            | "expect_query" => {
+                self.step(app, method, args_json(first)?, logged, last_app)
+                    .await
+            }
+            "expect_message" => {
+                self.step(app, method, args_or(first, "contains")?, logged, last_app)
+                    .await
+            }
+            "screenshot_diff" => {
+                // A baseline is a file name under .iced-mcp/baselines: scripts
+                // may not write elsewhere.
+                let args = args_or(first, "baseline")?;
+                if let Some(name) = args.get("baseline").and_then(serde_json::Value::as_str) {
+                    file_name(name, "baseline")?;
+                }
+                self.step(app, method, args, logged, last_app).await
+            }
+            "run_app_action" | "load_fixture" | "fixture" => {
+                let name = string_arg(&first, "the name")?;
+                let action = if method == "fixture" {
+                    "load_fixture"
+                } else {
+                    method
+                };
+                let mut json = serde_json::json!({ "name": name });
+                if !second.is_null() {
+                    json["args"] = second;
+                }
+                self.step(app, action, json, logged, last_app).await
+            }
+            "expect" => {
+                let mut json = args_json(first)?;
+                if !second.is_null() {
+                    // `expect(node, checks)`: aim at the node by id, else by ref.
+                    let node = json;
+                    let mut checks = args_json(second)?;
+                    let target =
+                        match (node.get("id"), node.get("ref")) {
+                            (Some(id), _) if id.is_string() => serde_json::json!({ "id": id }),
+                            (_, Some(reference)) => serde_json::json!({ "ref": reference }),
+                            _ => return Err(
+                                "bad args: expect(node, checks) needs a node from find or snapshot"
+                                    .into(),
+                            ),
+                        };
+                    if let (Some(checks), Some(target)) =
+                        (checks.as_object_mut(), target.as_object())
+                    {
+                        for (k, v) in target {
+                            checks.insert(k.clone(), v.clone());
+                        }
+                        if let Some(window) = node.get("window") {
+                            checks.entry("window").or_insert(window.clone());
+                        }
+                    }
+                    json = checks;
+                }
+                self.step(app, "expect", json, logged, last_app).await
+            }
+            "sleep" => {
+                let ms = match &first {
+                    serde_json::Value::Null => 250,
+                    serde_json::Value::Number(n) => n
+                        .as_u64()
+                        .or_else(|| n.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
+                        .unwrap_or(0),
+                    other => {
+                        return Err(format!(
+                            "bad args: sleep takes milliseconds, got {}",
+                            type_name(other)
+                        ))
+                    }
+                }
+                .min(MAX_SLEEP_MS);
+                *logged = Some(("sleep".into(), serde_json::json!({ "ms": ms })));
+                let left = self.deadline.saturating_duration_since(Instant::now());
+                let wanted = Duration::from_millis(ms);
+                tokio::time::sleep(wanted.min(left)).await;
+                if wanted > left {
+                    return Err(self.timed_out());
+                }
+                Ok(serde_json::json!(format!("slept {ms} ms")))
+            }
+            "query" => {
+                let name = string_arg(&first, "the query name")?;
+                *logged = Some(("query".into(), serde_json::json!({ "name": name })));
+                self.with_app(app, last_app, async |app, _| {
+                    ops::query(app, &name, &second).await
+                })
+                .await
+            }
+            "snapshot" => {
+                let window = match &first {
+                    serde_json::Value::Null => None,
+                    other => Some(string_arg(other, "the window")?),
+                };
+                *logged = Some(("snapshot".into(), serde_json::Value::Null));
+                let snapshot = self
+                    .with_app(app, last_app, async |app, _| {
+                        ops::take_snapshot(app, window.as_deref()).await
+                    })
+                    .await?;
+                let nodes: Vec<serde_json::Value> = snapshot.nodes.iter().map(node_json).collect();
+                Ok(serde_json::json!({
+                    "window": snapshot.window,
+                    "width": snapshot.size.width,
+                    "height": snapshot.size.height,
+                    "nodes": nodes,
+                }))
+            }
+            "find" | "find_all" => {
+                let selector = args_or(first, "text")?;
+                *logged = Some((method.to_owned(), selector.clone()));
+                let get = |key: &str| selector.get(key).and_then(serde_json::Value::as_str);
+                let (id, text, role, window) = (get("id"), get("text"), get("role"), get("window"));
+                let exact = selector
+                    .get("exact")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if id.is_none() && text.is_none() && role.is_none() {
+                    return Err("bad args: find needs id, text or role".into());
+                }
+                let found = self
+                    .with_app(app, last_app, async |app, _| {
+                        let snapshot = ops::take_snapshot(app, window).await?;
+                        Ok(find_nodes(&snapshot, id, text, exact, role))
+                    })
+                    .await?;
+                Ok(if method == "find" {
+                    found.into_iter().next().unwrap_or_default()
+                } else {
+                    serde_json::Value::Array(found)
+                })
+            }
+            "diagnose" => {
+                let json = args_json(first)?;
+                *logged = Some(("diagnose".into(), json.clone()));
+                let p: DiagnoseParams =
+                    serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
+                let (_, value) = self
+                    .with_app(app, last_app, async |app, _| ops::diagnose(app, &p).await)
+                    .await?;
+                Ok(value["findings"].clone())
+            }
+            "screenshot" => {
+                let mut json = args_or(first, "name")?;
+                *logged = Some(("screenshot".into(), json.clone()));
+                let name = json
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(
+                        "bad args: screenshot needs a name (the file .iced-mcp/screenshots/<name>.png)",
+                    )?
+                    .to_owned();
+                file_name(&name, "screenshot")?;
+                let root = self.apps.lock().await.root().to_path_buf();
+                let path = screenshots_dir(&root).join(format!("{name}.png"));
+                if let Some(map) = json.as_object_mut() {
+                    map.remove("name");
+                    map.insert("save_to".into(), serde_json::json!(path.to_string_lossy()));
+                }
+                let p: ScreenshotToolParams =
+                    serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
+                let (_, text) = self
+                    .with_app(app, last_app, async |app, _| ops::screenshot(app, &p).await)
+                    .await?;
+                Ok(serde_json::json!(text))
+            }
+            "messages" => {
+                let json = args_json(first)?;
+                *logged = Some(("messages".into(), serde_json::Value::Null));
+                let p: MessagesToolParams =
+                    serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
+                let log = self
+                    .with_app(app, last_app, async |app, _| {
+                        ops::read_messages(
+                            app,
+                            p.since,
+                            p.filter.clone(),
+                            Some(p.limit.unwrap_or(30)),
+                        )
+                        .await
+                    })
+                    .await?;
+                serde_json::to_value(&log.entries).map_err(|e| e.to_string())
+            }
+            "state" => {
+                let json = args_json(first)?;
+                *logged = Some(("state".into(), serde_json::Value::Null));
+                let p: StateToolParams =
+                    serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
+                let text = self
+                    .with_app(app, last_app, async |app, _| ops::state(app, &p).await)
+                    .await?;
+                Ok(serde_json::json!(text))
+            }
+            "logs" => {
+                let json = args_json(first)?;
+                *logged = Some(("logs".into(), serde_json::Value::Null));
+                let p: LogsParams =
+                    serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
+                let lines = self
+                    .with_app(app, last_app, async |app, _| match &app.launched {
+                        Some(launched) => Ok(launched
+                            .logs
+                            .read(
+                                p.since,
+                                p.tail.unwrap_or(60),
+                                p.max_chars.unwrap_or(8000),
+                                p.filter.as_deref(),
+                            )
+                            .lines),
+                        None => Err(format!(
+                            "{} was connected, not launched here: its output is not captured",
+                            app.name
+                        )),
+                    })
+                    .await?;
+                Ok(serde_json::json!(lines))
+            }
+            other => Err(format!("unknown method `{other}`")),
         }
     }
 }
 
-/// Builds `app` and `apps` in Lua around one Rust entry point. Each method
-/// is a Lua wrapper that raises the entry point's failure with
-/// `error(message, 0)`, so a script sees a plain string (`pcall` gets the
-/// message, not a wrapped Rust error) whose line was already added.
-const HANDLES: &str = r#"
-local host, methods = ...
-local function handle(name)
-  local t = {}
-  for _, method in ipairs(methods) do
-    t[method] = function(_, a, b)
-      local ok, value = host(name, method, a, b)
-      if not ok then error(value, 0) end
-      return value
-    end
-  end
-  return setmetatable(t, { __tostring = function() return "app<" .. (name or "default") .. ">" end })
-end
-local apps = setmetatable({}, { __index = function(_, name) return handle(name) end })
-return handle(nil), apps
-"#;
+/// A file name scripts may write under `.iced-mcp/`: as flow names are.
+fn file_name(name: &str, what: &str) -> Result<(), String> {
+    flow::check_name(name).map_err(|e| e.replacen("flow name", &format!("{what} name"), 1))
+}
 
-/// Builds the sandboxed VM, runs the script and collects what it left.
-fn execute(host: Host, script: &Script) -> Finished {
-    let host = Rc::new(host);
-    let result = run_vm(&host, script);
-    let output = host.output.borrow().clone();
-    let steps = host.steps.borrow().clone();
-    let last_app = host.last_app.borrow().clone();
-    match result {
-        Ok(value) => (output, value, steps, last_app, None),
-        Err(error) => (
-            output,
-            serde_json::Value::Null,
-            steps,
-            last_app,
-            Some(error),
-        ),
+/// The Lua type a JSON argument came from, for error messages.
+fn type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "nil",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => "table",
     }
 }
 
-fn run_vm(host: &Rc<Host>, script: &Script) -> Result<serde_json::Value, ScriptError> {
-    let fail = |message: String| ScriptError {
-        line: line_of(&message, &script.name),
-        message,
-    };
-    let lua = new_sandbox(host, script).map_err(|e| fail(format!("cannot start Luau: {e}")))?;
-    let values = lua
-        .load(script.source.as_str())
-        .set_name(format!("={}", script.name))
-        .eval::<MultiValue>()
-        .map_err(|e| fail(error_text(&e, script.memory)))?;
-    Ok(return_value(&lua, values))
-}
-
-/// A Luau VM with only safe libraries, the `app`/`apps`/`print` globals,
-/// the deadline interrupt and the memory limit, in sandbox mode.
-fn new_sandbox(host: &Rc<Host>, script: &Script) -> mlua::Result<Lua> {
-    let libs = StdLib::COROUTINE
-        | StdLib::TABLE
-        | StdLib::STRING
-        | StdLib::UTF8
-        | StdLib::BIT
-        | StdLib::MATH
-        | StdLib::BUFFER;
-    let lua = Lua::new_with(libs, LuaOptions::default())?;
-    let globals = lua.globals();
-    // mlua installs a filesystem `require` for Luau: scripts get none.
-    for name in [
-        "require",
-        "loadstring",
-        "getfenv",
-        "setfenv",
-        "dofile",
-        "load",
-    ] {
-        globals.raw_set(name, Value::Nil)?;
-    }
-    lua.set_app_data(host.clone());
-
-    let printer = host.clone();
-    globals.set(
-        "print",
-        lua.create_function(move |_, args: MultiValue| {
-            let parts: Vec<String> = args
-                .iter()
-                .map(|v| v.to_string().unwrap_or_else(|_| format!("{v:?}")))
-                .collect();
-            printer.print(&parts.join("\t"));
-            Ok(())
-        })?,
-    )?;
-    let entry = lua.create_function(
-        |lua, (name, method, first, second): (Option<String>, String, Value, Value)| {
-            let Some(&method) = METHODS.iter().find(|m| **m == method) else {
-                return Ok((
-                    false,
-                    Value::String(lua.create_string(format!("unknown method `{method}`"))?),
-                ));
-            };
-            match call(lua, name.as_deref(), method, first, second) {
-                Ok(value) => Ok((true, value)),
-                Err(message) => Ok((false, Value::String(lua.create_string(message)?))),
-            }
-        },
-    )?;
-    let (app, apps): (Value, Value) = lua
-        .load(HANDLES)
-        .set_name("=iced-mcp")
-        .call((entry, METHODS.to_vec()))?;
-    // `app` names the app `script_eval {app}` asked for.
-    let app = match &script.app {
-        Some(name) => {
-            let apps_table = apps.as_table().cloned();
-            match apps_table {
-                Some(table) => table.get::<Value>(name.as_str())?,
-                None => app,
-            }
-        }
-        None => app,
-    };
-    globals.set("app", app)?;
-    globals.set("apps", apps)?;
-
-    lua.sandbox(true)?;
-    lua.set_memory_limit(script.memory)?;
-    let stopper = host.clone();
-    lua.set_interrupt(move |lua| match stopper.stop_reason() {
-        Some(reason) => Err(mlua::Error::RuntimeError(located(
-            lua,
-            &stopper.chunk,
-            &reason,
-            0,
-        ))),
-        None => Ok(VmState::Continue),
-    });
-    Ok(lua)
-}
-
-/// `chunk:line: message`, with the line of the Lua code at `level`.
-fn located(lua: &Lua, chunk: &str, message: &str, level: usize) -> String {
-    match current_line(lua, level) {
-        Some(line) => format!("{chunk}:{line}: {message}"),
-        None => format!("{chunk}: {message}"),
+/// A method's table argument (`nil` → `{}`).
+fn args_json(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    match value {
+        serde_json::Value::Null => Ok(serde_json::json!({})),
+        serde_json::Value::Array(list) if list.is_empty() => Ok(serde_json::json!({})),
+        table @ (serde_json::Value::Object(_) | serde_json::Value::Array(_)) => Ok(table),
+        other => Err(format!(
+            "bad args: expected a table, got {}",
+            type_name(&other)
+        )),
     }
 }
 
-/// The line the Lua code at stack `level` is on (1 = the caller of a Rust
-/// function).
-fn current_line(lua: &Lua, level: usize) -> Option<usize> {
-    lua.inspect_stack(level, |debug| debug.current_line())
-        .flatten()
+/// A table, or a string standing for `{ [key] = string }`.
+fn args_or(value: serde_json::Value, key: &str) -> Result<serde_json::Value, String> {
+    match value {
+        serde_json::Value::String(s) => Ok(serde_json::json!({ key: s })),
+        other => args_json(other),
+    }
+}
+
+fn string_arg(value: &serde_json::Value, what: &str) -> Result<String, String> {
+    match value {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        other => Err(format!(
+            "bad args: {what} must be a string, got {}",
+            type_name(other)
+        )),
+    }
 }
 
 /// The line number in `chunk:N: …`.
@@ -710,95 +1068,6 @@ pub(crate) fn line_of(message: &str, chunk: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// An mlua error as one readable message: the innermost cause, without
-/// mlua's callback wrapping or tracebacks.
-fn error_text(error: &mlua::Error, memory: usize) -> String {
-    match error {
-        mlua::Error::CallbackError { cause, .. } => error_text(cause, memory),
-        mlua::Error::WithContext { cause, .. } => error_text(cause, memory),
-        mlua::Error::RuntimeError(message) => message
-            .split("\nstack traceback:")
-            .next()
-            .unwrap_or(message)
-            .to_owned(),
-        mlua::Error::SyntaxError { message, .. } => message.clone(),
-        mlua::Error::MemoryError(_) => format!(
-            "the script ran out of memory (limit {} MiB)",
-            memory / (1024 * 1024)
-        ),
-        other => other.to_string(),
-    }
-}
-
-/// The script's return values as JSON: none → null, one → itself, several
-/// → an array. What JSON cannot hold (functions, userdata) becomes text.
-fn return_value(lua: &Lua, values: MultiValue) -> serde_json::Value {
-    let mut list: Vec<serde_json::Value> = values.into_iter().map(|v| to_json(lua, v)).collect();
-    match list.len() {
-        0 => serde_json::Value::Null,
-        1 => list.remove(0),
-        _ => serde_json::Value::Array(list),
-    }
-}
-
-fn to_json(lua: &Lua, value: Value) -> serde_json::Value {
-    match lua.from_value::<serde_json::Value>(value.clone()) {
-        Ok(json) => json,
-        Err(_) => serde_json::Value::String(value.to_string().unwrap_or_default()),
-    }
-}
-
-/// A Lua value as a step's JSON arguments.
-fn args_json(lua: &Lua, value: Value) -> Result<serde_json::Value, String> {
-    match value {
-        Value::Nil => Ok(serde_json::json!({})),
-        Value::Table(_) => lua
-            .from_value::<serde_json::Value>(value)
-            .map_err(|e| format!("bad args: {e}")),
-        other => Err(format!(
-            "bad args: expected a table, got {}",
-            other.type_name()
-        )),
-    }
-}
-
-/// A table, or a string standing for `{ [key] = string }`.
-fn args_or(lua: &Lua, value: Value, key: &str) -> Result<serde_json::Value, String> {
-    match value {
-        Value::String(s) => {
-            Ok(serde_json::json!({ key: s.to_str().map_err(|e| e.to_string())?.to_string() }))
-        }
-        other => args_json(lua, other),
-    }
-}
-
-/// Any Lua value as JSON (`nil` → null), for app action and query args.
-fn any_json(lua: &Lua, value: Value) -> Result<serde_json::Value, String> {
-    match value {
-        Value::Nil => Ok(serde_json::Value::Null),
-        other => lua
-            .from_value::<serde_json::Value>(other)
-            .map_err(|e| format!("bad args: {e}")),
-    }
-}
-
-fn to_lua(lua: &Lua, value: &serde_json::Value) -> Result<Value, String> {
-    let options = mlua::serde::SerializeOptions::new()
-        .serialize_none_to_null(false)
-        .serialize_unit_to_null(false);
-    lua.to_value_with(value, options).map_err(|e| e.to_string())
-}
-
-fn string_arg(value: &Value, what: &str) -> Result<String, String> {
-    match value {
-        Value::String(s) => Ok(s.to_str().map_err(|e| e.to_string())?.to_string()),
-        other => Err(format!(
-            "bad args: {what} must be a string, got {}",
-            other.type_name()
-        )),
-    }
-}
-
 /// A node as a Lua-ready JSON object, with `ref` beside `index`.
 fn node_json(node: &iced_mcp_protocol::Node) -> serde_json::Value {
     let mut value = serde_json::to_value(node).unwrap_or_default();
@@ -806,284 +1075,6 @@ fn node_json(node: &iced_mcp_protocol::Node) -> serde_json::Value {
         map.insert("ref".into(), serde_json::json!(node.index));
     }
     value
-}
-
-/// One `app:method(a, b)` call: its result, or the message to raise,
-/// `chunk:line: …` with the line of the script that called it.
-fn call(
-    lua: &Lua,
-    app: Option<&str>,
-    method: &'static str,
-    first: Value,
-    second: Value,
-) -> Result<Value, String> {
-    let Some(host) = lua.app_data_ref::<Rc<Host>>().map(|h| Rc::clone(&h)) else {
-        return Err("the script host is gone".into());
-    };
-    // 0 = this function, 1 = the Lua wrapper, 2 = the script.
-    let line = current_line(lua, 2);
-    let started = Instant::now();
-
-    // The step this call is, for the log: (action, args).
-    let mut logged: Option<(String, serde_json::Value)> = None;
-    let result = dispatch(lua, &host, app, method, first, second, &mut logged);
-
-    if let Some((action, args)) = logged {
-        let label = flow::label(&FlowStep { action, args });
-        host.steps.borrow_mut().push(StepLog {
-            line,
-            app: host.last_app.borrow().clone(),
-            action: method.to_owned(),
-            label,
-            ok: result.is_ok(),
-            ms: elapsed_ms(started),
-        });
-    }
-    result.map_err(|message| match line {
-        Some(line) => format!("{}:{line}: {message}", host.chunk),
-        None => format!("{}: {message}", host.chunk),
-    })
-}
-
-#[allow(clippy::too_many_lines)]
-fn dispatch(
-    lua: &Lua,
-    host: &Host,
-    app: Option<&str>,
-    method: &'static str,
-    first: Value,
-    second: Value,
-    logged: &mut Option<(String, serde_json::Value)>,
-) -> Result<Value, String> {
-    // A step from the shared vocabulary, run through `ops::run_step`.
-    let mut step = |action: &str, args: serde_json::Value| -> Result<Value, String> {
-        *logged = Some((action.to_owned(), args.clone()));
-        let step = Step {
-            action: action.to_owned(),
-            args,
-        };
-        let text = host.with_app(app, async |app, ctx| ops::run_step(app, ctx, &step).await)?;
-        to_lua(lua, &serde_json::Value::String(text))
-    };
-    match method {
-        "click" | "hover" => step(method, args_or(lua, first, "text")?),
-        "type_text" | "paste" => step(method, args_or(lua, first, "text")?),
-        "press_key" => step(method, args_or(lua, first, "keys")?),
-        "scroll"
-        | "drag"
-        | "wait_idle"
-        | "expect_pixel"
-        | "expect_no_diagnostics"
-        | "expect_query" => step(method, args_json(lua, first)?),
-        "wait_for" => step(method, args_or(lua, first, "text")?),
-        "expect_message" => step(method, args_or(lua, first, "contains")?),
-        "screenshot_diff" => {
-            // A baseline is a file name under .iced-mcp/baselines: scripts
-            // may not write elsewhere.
-            let args = args_or(lua, first, "baseline")?;
-            if let Some(name) = args.get("baseline").and_then(serde_json::Value::as_str) {
-                flow::check_name(name).map_err(|e| e.replacen("flow name", "baseline", 1))?;
-            }
-            step(method, args)
-        }
-        "run_app_action" | "load_fixture" | "fixture" => {
-            let name = string_arg(&first, "the name")?;
-            let args = any_json(lua, second)?;
-            let action = if method == "fixture" {
-                "load_fixture"
-            } else {
-                method
-            };
-            let mut json = serde_json::json!({ "name": name });
-            if !args.is_null() {
-                json["args"] = args;
-            }
-            step(action, json)
-        }
-        "expect" => {
-            let mut json = args_json(lua, first)?;
-            if !second.is_nil() {
-                // `expect(node, checks)`: aim at the node by id, else by ref.
-                let node = json;
-                let mut checks = args_json(lua, second)?;
-                let target = match (node.get("id"), node.get("ref")) {
-                    (Some(id), _) if id.is_string() => serde_json::json!({ "id": id }),
-                    (_, Some(reference)) => serde_json::json!({ "ref": reference }),
-                    _ => {
-                        return Err(
-                            "bad args: expect(node, checks) needs a node from find or snapshot"
-                                .into(),
-                        )
-                    }
-                };
-                if let (Some(checks), Some(target)) = (checks.as_object_mut(), target.as_object()) {
-                    for (k, v) in target {
-                        checks.insert(k.clone(), v.clone());
-                    }
-                    if let Some(window) = node.get("window") {
-                        checks.entry("window").or_insert(window.clone());
-                    }
-                }
-                json = checks;
-            }
-            step("expect", json)
-        }
-        "sleep" => {
-            let ms = match first {
-                Value::Integer(n) => u64::try_from(n).unwrap_or(0),
-                Value::Number(n) if n >= 0.0 => n as u64,
-                Value::Nil => 250,
-                other => {
-                    return Err(format!(
-                        "bad args: sleep takes milliseconds, got {}",
-                        other.type_name()
-                    ))
-                }
-            }
-            .min(MAX_SLEEP_MS);
-            *logged = Some(("sleep".into(), serde_json::json!({ "ms": ms })));
-            if let Some(reason) = host.stop_reason() {
-                return Err(reason);
-            }
-            let left = host.deadline.saturating_duration_since(Instant::now());
-            let wanted = Duration::from_millis(ms);
-            host.handle
-                .block_on(async { tokio::time::sleep(wanted.min(left)).await });
-            if wanted > left {
-                return Err(host.stop_reason().unwrap_or_else(|| "timed out".into()));
-            }
-            to_lua(lua, &serde_json::json!(format!("slept {ms} ms")))
-        }
-        "query" => {
-            let name = string_arg(&first, "the query name")?;
-            let args = any_json(lua, second)?;
-            *logged = Some(("query".into(), serde_json::json!({ "name": name })));
-            let value = host.with_app(app, async |app, _| ops::query(app, &name, &args).await)?;
-            to_lua(lua, &value)
-        }
-        "snapshot" => {
-            let window = match first {
-                Value::Nil => None,
-                other => Some(string_arg(&other, "the window")?),
-            };
-            *logged = Some(("snapshot".into(), serde_json::Value::Null));
-            let snapshot = host.with_app(app, async |app, _| {
-                ops::take_snapshot(app, window.as_deref()).await
-            })?;
-            let nodes: Vec<serde_json::Value> = snapshot.nodes.iter().map(node_json).collect();
-            to_lua(
-                lua,
-                &serde_json::json!({
-                    "window": snapshot.window,
-                    "width": snapshot.size.width,
-                    "height": snapshot.size.height,
-                    "nodes": nodes,
-                }),
-            )
-        }
-        "find" | "find_all" => {
-            let selector = args_or(lua, first, "text")?;
-            *logged = Some((method.to_owned(), selector.clone()));
-            let get = |key: &str| selector.get(key).and_then(serde_json::Value::as_str);
-            let (id, text, role, window) = (get("id"), get("text"), get("role"), get("window"));
-            let exact = selector
-                .get("exact")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if id.is_none() && text.is_none() && role.is_none() {
-                return Err("bad args: find needs id, text or role".into());
-            }
-            let found = host.with_app(app, async |app, _| {
-                let snapshot = ops::take_snapshot(app, window).await?;
-                Ok(find_nodes(&snapshot, id, text, exact, role))
-            })?;
-            if method == "find" {
-                match found.into_iter().next() {
-                    Some(node) => to_lua(lua, &node),
-                    None => Ok(Value::Nil),
-                }
-            } else {
-                to_lua(lua, &serde_json::Value::Array(found))
-            }
-        }
-        "diagnose" => {
-            let json = args_json(lua, first)?;
-            *logged = Some(("diagnose".into(), json.clone()));
-            let p: DiagnoseParams =
-                serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
-            let (_, value) = host.with_app(app, async |app, _| ops::diagnose(app, &p).await)?;
-            to_lua(lua, &value["findings"])
-        }
-        "screenshot" => {
-            let mut json = args_or(lua, first, "name")?;
-            *logged = Some(("screenshot".into(), json.clone()));
-            let name = json
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .ok_or(
-                    "bad args: screenshot needs a name (the file .iced-mcp/screenshots/<name>.png)",
-                )?
-                .to_owned();
-            flow::check_name(&name)?;
-            let root = host
-                .handle
-                .block_on(async { host.apps.lock().await.root().to_path_buf() });
-            let path = screenshots_dir(&root).join(format!("{name}.png"));
-            if let Some(map) = json.as_object_mut() {
-                map.remove("name");
-                map.insert("save_to".into(), serde_json::json!(path.to_string_lossy()));
-            }
-            let p: ScreenshotToolParams =
-                serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
-            let (_, text) = host.with_app(app, async |app, _| ops::screenshot(app, &p).await)?;
-            to_lua(lua, &serde_json::json!(text))
-        }
-        "messages" => {
-            let json = args_json(lua, first)?;
-            *logged = Some(("messages".into(), serde_json::Value::Null));
-            let p: MessagesToolParams =
-                serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
-            let log = host.with_app(app, async |app, _| {
-                ops::read_messages(app, p.since, p.filter.clone(), Some(p.limit.unwrap_or(30)))
-                    .await
-            })?;
-            to_lua(
-                lua,
-                &serde_json::to_value(&log.entries).map_err(|e| e.to_string())?,
-            )
-        }
-        "state" => {
-            let json = args_json(lua, first)?;
-            *logged = Some(("state".into(), serde_json::Value::Null));
-            let p: StateToolParams =
-                serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
-            let text = host.with_app(app, async |app, _| ops::state(app, &p).await)?;
-            to_lua(lua, &serde_json::json!(text))
-        }
-        "logs" => {
-            let json = args_json(lua, first)?;
-            *logged = Some(("logs".into(), serde_json::Value::Null));
-            let p: LogsParams =
-                serde_json::from_value(json).map_err(|e| format!("bad args: {e}"))?;
-            let lines = host.with_app(app, async |app, _| match &app.launched {
-                Some(launched) => Ok(launched
-                    .logs
-                    .read(
-                        p.since,
-                        p.tail.unwrap_or(60),
-                        p.max_chars.unwrap_or(8000),
-                        p.filter.as_deref(),
-                    )
-                    .lines),
-                None => Err(format!(
-                    "{} was connected, not launched here: its output is not captured",
-                    app.name
-                )),
-            })?;
-            to_lua(lua, &serde_json::json!(lines))
-        }
-        other => Err(format!("unknown method `{other}`")),
-    }
 }
 
 /// Where `app:screenshot` writes: `<root>/.iced-mcp/screenshots`.
@@ -1172,19 +1163,14 @@ async fn typecheck_with(executable: &std::ffi::OsStr, source: &str) -> TypeCheck
             prelude.split_once('\n').map_or("", |(_, r)| r)
         )
     };
-    let unique = format!(
-        "iced-mcp-script-{}-{}.luau",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    );
-    let path = std::env::temp_dir().join(unique);
-    if let Err(error) = std::fs::write(&path, combined) {
-        return TypeCheck::Unavailable {
-            reason: format!("cannot write a temporary file: {error}"),
-        };
-    }
+    let path = match write_new_temp(&combined) {
+        Ok(path) => path,
+        Err(error) => {
+            return TypeCheck::Unavailable {
+                reason: format!("cannot write a temporary file: {error}"),
+            }
+        }
+    };
     let output = tokio::time::timeout(
         ANALYZE_TIMEOUT,
         tokio::process::Command::new(executable)
@@ -1222,6 +1208,37 @@ async fn typecheck_with(executable: &std::ffi::OsStr, source: &str) -> TypeCheck
     } else {
         TypeCheck::Failed { errors }
     }
+}
+
+/// Writes `text` to a new file in the temp dir, never one that exists
+/// (`create_new`), and returns its path.
+fn write_new_temp(text: &str) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut last = None;
+    for _ in 0..16 {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "iced-mcp-script-{}-{nanos}-{n}.luau",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no free temporary name")))
 }
 
 /// `luau-analyze --formatter=plain` output → the script's type and syntax
@@ -1278,11 +1295,18 @@ fn parse_header(line: &str) -> Option<(usize, usize, &str, &str)> {
 mod tests {
     use super::*;
 
-    fn sandbox_run(source: &str) -> Outcome {
-        sandbox_run_with(Script {
+    /// A script on a thread worker: the test binary cannot be a worker
+    /// process (`tests/scripts.rs` covers those through the real binary).
+    fn script(source: &str) -> Script {
+        Script {
             typecheck: false,
+            worker: Worker::Thread,
             ..Script::new("script", source)
-        })
+        }
+    }
+
+    fn sandbox_run(source: &str) -> Outcome {
+        sandbox_run_with(script(source))
     }
 
     fn sandbox_run_with(script: Script) -> Outcome {
@@ -1293,7 +1317,7 @@ mod tests {
             .unwrap();
         let root = std::env::temp_dir().join(format!("iced-mcp-script-{}", std::process::id()));
         let apps = Arc::new(Mutex::new(Apps::new(root)));
-        runtime.block_on(run(apps, script))
+        runtime.block_on(run(apps, script, None))
     }
 
     #[test]
@@ -1344,8 +1368,7 @@ mod tests {
         let started = Instant::now();
         let out = sandbox_run_with(Script {
             timeout: Duration::from_millis(300),
-            typecheck: false,
-            ..Script::new("script", "local n = 0\nwhile true do\n  n += 1\nend")
+            ..script("local n = 0\nwhile true do\n  n += 1\nend")
         });
         assert!(started.elapsed() < Duration::from_secs(5));
         let error = out.error.expect("must time out");
@@ -1361,11 +1384,7 @@ mod tests {
     fn memory_is_capped() {
         let out = sandbox_run_with(Script {
             memory: 8 * 1024 * 1024,
-            typecheck: false,
-            ..Script::new(
-                "script",
-                "local t = {}\nfor i = 1, 1e8 do t[i] = string.rep('x', 64) .. i end",
-            )
+            ..script("local t = {}\nfor i = 1, 1e8 do t[i] = string.rep('x', 64) .. i end")
         });
         let error = out.error.expect("must run out of memory");
         assert!(
@@ -1379,8 +1398,7 @@ mod tests {
     fn output_is_capped() {
         let out = sandbox_run_with(Script {
             output: 100,
-            typecheck: false,
-            ..Script::new("script", "for i = 1, 1000 do print('line', i) end")
+            ..script("for i = 1, 1000 do print('line', i) end")
         });
         assert!(out.ok);
         assert!(out.output.len() < 150, "{}", out.output.len());
@@ -1450,11 +1468,14 @@ mod tests {
             out.error
                 .unwrap()
                 .message
-                .contains("baseline `../../outside` must be"),
+                .contains("baseline name `../../outside` must be"),
             "baselines stay under .iced-mcp"
         );
         let out = sandbox_run("app:screenshot('../x')");
-        assert!(out.error.unwrap().message.contains("must be 1–80 letters"));
+        assert_eq!(
+            out.error.unwrap().message,
+            "script:1: screenshot name `../x` must be 1–80 letters, digits, '-' or '_'"
+        );
         let out = sandbox_run("app:clik('x')");
         assert!(out.error.unwrap().message.contains("clik"));
     }
@@ -1466,57 +1487,9 @@ mod tests {
         assert_eq!(out.steps[0].label, "sleep");
         let out = sandbox_run_with(Script {
             timeout: Duration::from_millis(100),
-            typecheck: false,
-            ..Script::new("script", "app:sleep(5000)")
+            ..script("app:sleep(5000)")
         });
         assert!(out.error.unwrap().message.contains("timed out"));
-    }
-
-    #[test]
-    fn json_converts_both_ways() {
-        let lua = Lua::new();
-        let json = serde_json::json!({ "a": [1, 2.5, "x", true], "b": { "c": null }, "e": [] });
-        let value = to_lua(&lua, &json).unwrap();
-        let back = to_json(&lua, value);
-        assert_eq!(back["a"], serde_json::json!([1, 2.5, "x", true]));
-        assert!(back["b"].get("c").is_none(), "null becomes nil");
-        assert_eq!(back["e"], serde_json::json!([]));
-        // Whole numbers stay integers, which step parameters need.
-        let args = args_json(
-            &lua,
-            lua.load("return { ms = 250, x = 10.5 }").eval().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(args, serde_json::json!({ "ms": 250, "x": 10.5 }));
-        let p: WaitParams = serde_json::from_value(
-            args_json(
-                &lua,
-                lua.load("return { text = 'a', timeout_ms = 100 }")
-                    .eval()
-                    .unwrap(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(p.timeout_ms, Some(100));
-        assert_eq!(
-            args_or(
-                &lua,
-                Value::String(lua.create_string("Add").unwrap()),
-                "text"
-            )
-            .unwrap(),
-            serde_json::json!({ "text": "Add" })
-        );
-        assert_eq!(
-            to_json(
-                &lua,
-                Value::Function(lua.create_function(|_, ()| Ok(())).unwrap())
-            )
-            .as_str()
-            .map(|s| s.starts_with("function")),
-            Some(true)
-        );
     }
 
     /// Every method the VM registers is declared in `iced-mcp.d.luau`, and
@@ -1642,38 +1615,44 @@ mod tests {
         assert!(parse_cli(&args("a.luau --bogus")).is_err());
     }
 
-    /// `run-script` exits 0 when the script finishes, 1 when it fails and
-    /// 2 when the file cannot be read.
     #[test]
-    fn the_cli_exit_status_follows_the_outcome() {
+    fn a_cancelled_script_stops_at_once() {
+        let started = Instant::now();
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let dir = std::env::temp_dir().join(format!("iced-mcp-run-script-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let write = |name: &str, text: &str| {
-            let path = dir.join(name);
-            std::fs::write(&path, text).unwrap();
-            path
-        };
-        let server = crate::tools::Server::new();
-        let cli = |file: PathBuf| CliOptions {
-            file,
-            root: Some(dir.clone()),
-            ..CliOptions::default()
-        };
-        let (code, report) = runtime
-            .block_on(server.run_script_cli(&cli(write("ok.luau", "print('hi')\nreturn 42"))));
-        assert_eq!(code, 0, "{report}");
-        assert!(report.starts_with("PASS ok.luau"), "{report}");
-        assert!(report.contains("Return: 42"), "{report}");
-        let (code, report) = runtime
-            .block_on(server.run_script_cli(&cli(write("bad.luau", "local x = 1\nerror('nope')"))));
-        assert_eq!(code, 1, "{report}");
-        assert!(report.contains("Error: bad.luau:2: nope"), "{report}");
-        assert!(report.contains("Failure bundle: "), "{report}");
-        let (code, report) =
-            runtime.block_on(server.run_script_cli(&cli(dir.join("missing.luau"))));
-        assert_eq!(code, 2, "{report}");
-        let _ = std::fs::remove_dir_all(&dir);
+        let apps = Arc::new(Mutex::new(Apps::new(std::env::temp_dir())));
+        let out = runtime.block_on(run(
+            apps,
+            Script {
+                timeout: Duration::from_secs(3),
+                ..script("while true do end")
+            },
+            Some(Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            })),
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            out.error.unwrap().message,
+            "script: the script was cancelled"
+        );
+    }
+
+    #[test]
+    fn the_return_value_and_prints_are_capped() {
+        let out = sandbox_run("return string.rep('x', 2 * 1024 * 1024)");
+        let message = out.error.unwrap().message;
+        assert!(
+            message.contains("over the 1024 KiB limit: return less"),
+            "{message}"
+        );
+        let out = sandbox_run("print(string.rep('y', 5 * 1024 * 1024))\nreturn 1");
+        assert!(out.ok, "{:?}", out.error);
+        assert!(out.output.ends_with("… output cut at 65536 bytes"));
+        assert!(out.output.len() < 70_000);
     }
 
     #[test]

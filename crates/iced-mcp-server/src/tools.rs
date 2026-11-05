@@ -24,7 +24,8 @@ use iced_mcp_protocol::{
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 
 use base64::Engine as _;
 use std::fmt::Write as _;
@@ -204,6 +205,8 @@ impl Apps {
 #[derive(Clone)]
 pub(crate) struct Server {
     apps: Arc<Mutex<Apps>>,
+    /// Slots for scripts running at once (`script_eval`).
+    scripts: Arc<tokio::sync::Semaphore>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -339,7 +342,7 @@ impl Server {
             script.app = Some(APP.to_owned());
         }
         let name = script.name.clone();
-        let outcome = crate::script::run_checked(self.apps.clone(), script, typecheck).await;
+        let outcome = crate::script::run_checked(self.apps.clone(), script, typecheck, None).await;
         self.apps.lock().await.drop_app(APP).await;
         (i32::from(!outcome.ok), outcome.render(&name))
     }
@@ -476,6 +479,7 @@ impl Server {
             .unwrap_or_default();
         Self {
             apps: Arc::new(Mutex::new(Apps::new(root))),
+            scripts: Arc::new(tokio::sync::Semaphore::new(crate::script::MAX_SCRIPTS)),
             tool_router: Self::tool_router(),
         }
     }
@@ -991,13 +995,27 @@ impl Server {
         description = "Run a Luau script that drives the apps in one round trip: set up, act, check and report with variables, loops and conditions instead of many tool calls. `app` is the default app (or `app` below), `apps[\"name\"]` any other; methods mirror the steps (click, type_text, press_key, scroll, drag, hover, paste, wait_for, wait_idle, sleep, run_app_action, query, load_fixture, expect, expect_pixel, expect_no_diagnostics, expect_message, expect_query, diagnose, snapshot, find, find_all, screenshot, screenshot_diff, messages, state, logs) and take their arguments as a table. A failing step raises its own message with the script line. Sandboxed: no files, network or OS; 60 s and 64 MiB by default. Type-checked first with luau-analyze when installed. Returns the printed output, the return value as JSON, the steps and the duration; on failure the error, its line and a failure bundle. Typed API: `script_api`.",
         annotations(open_world_hint = false)
     )]
-    async fn script_eval(&self, Parameters(p): Parameters<ScriptEvalParams>) -> ToolResult {
+    async fn script_eval(
+        &self,
+        Parameters(p): Parameters<ScriptEvalParams>,
+        context: RequestContext<RoleServer>,
+    ) -> ToolResult {
+        let Ok(_slot) = self.scripts.clone().try_acquire_owned() else {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "too many scripts running: at most {} at once; wait for one to finish",
+                crate::script::MAX_SCRIPTS
+            ))]));
+        };
         let mut script = crate::script::Script::new("script", p.source);
         script.app = p.app;
         if let Some(ms) = p.timeout_ms {
             script.timeout = Duration::from_millis(ms).min(crate::script::MAX_TIMEOUT);
         }
-        let outcome = crate::script::run(self.apps.clone(), script).await;
+        // rmcp cancels the request's token but keeps polling this future:
+        // the script watches the token itself.
+        let token = context.ct.clone();
+        let cancel: crate::script::Cancel = Box::pin(async move { token.cancelled().await });
+        let outcome = crate::script::run(self.apps.clone(), script, Some(cancel)).await;
         let text = outcome.render("script");
         let value = serde_json::to_value(&outcome).unwrap_or_default();
         let mut result = if outcome.ok {

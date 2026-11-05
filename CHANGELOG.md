@@ -21,9 +21,13 @@ All notable changes to iced-mcp. The three crates share one version.
   `luau-analyze` (on `PATH` or `ICED_MCP_LUAU_ANALYZE`) before they touch
   the app; without it the result says the check did not run.
 - Sandbox: Luau sandbox mode, no `io`/`os`/`debug`/`require`/
-  `loadstring`, a wall-clock deadline (60 s default), 64 MiB of memory and
-  64 KiB of output. Each script runs on its own thread, so other MCP
-  requests go on between its steps.
+  `loadstring`, a wall-clock deadline (60 s default), 64 MiB of memory,
+  64 KiB of output, a 1 MiB return value and at most 4 `script_eval`
+  scripts at once. Each script's VM runs in a child process
+  (`iced-mcp script-worker`) that asks the server for every app call, so
+  other MCP requests go on between its steps, and the server kills it at
+  the deadline plus 2 s (even inside a long built-in such as
+  `string.find`) or as soon as the MCP request is cancelled.
 - `iced-mcp run-script FILE [--launch CMD] [--root DIR] [--timeout-ms N]`
   (exit 0/1/2), and `run-suite` runs `.iced-mcp/scripts/*.luau` after the
   flows on the `--launch` app, with the same `--only`, `--repeat`,

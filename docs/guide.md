@@ -397,27 +397,42 @@ reports type errors with their lines **without touching the app** (for
 `run-script --launch`, before the app is started). Without the analyzer the
 reply says the check did not run, and mistakes surface as runtime errors
 instead. A first line `--!nonstrict` or `--!nocheck` relaxes the check for
-one script. Install it from the Luau releases
-(<https://github.com/luau-lang/luau/releases>) or `brew install luau`.
+one script. The check runs before the script's deadline starts and can take
+up to 30 s on top of `timeout_ms` (it is killed after that and reported as
+not run); it usually takes a fraction of a second. Install it from the Luau
+releases (<https://github.com/luau-lang/luau/releases>) or
+`brew install luau`.
 
 **The sandbox.** Each script gets a fresh Luau VM in sandbox mode (globals
 and libraries read-only) with only `coroutine`, `table`, `string`, `utf8`,
 `bit32`, `math` and `buffer`. There is no `io`, `os`, `debug`, `require`,
 `loadstring`, `getfenv`/`setfenv`, no files and no network: the only way
 out is `app` and `apps`, whose file writes stay under `.iced-mcp/`
-(baselines, screenshots, failure bundles). Limits: a wall-clock deadline
-(60 s by default; `timeout_ms` up to 30 min, `--timeout-ms` on the CLI),
-enforced inside Luau loops and calls and around every app call; 64 MiB of
-memory; 64 KiB of `print` output (cut beyond, and said so).
+(baselines, screenshots, failure bundles). Limits:
 
-**How it runs.** The step functions are async and share the server's apps
-behind a lock, while a Luau VM is neither thread-safe nor async. So each
-script runs on its own thread that owns its VM; an app call blocks that
-thread (not the server's async runtime) until the step finishes, holding the
-apps lock for that one step. Other MCP requests, including other scripts,
-run between a script's steps, exactly as they do between separate tool
-calls. Cancelling the request stops the script at its next loop iteration or
-app call.
+- a wall-clock deadline: 60 s by default (`timeout_ms` up to 30 min,
+  `--timeout-ms` on the CLI). Luau checks it at every loop iteration and
+  call, and every app call is cut at it. A built-in that never returns to
+  the interpreter (a plain `string.find` of a 2 MiB needle in a 4 MiB
+  string, a backtracking pattern) cannot be stopped from inside, so the
+  server kills the script's process 2 s past the deadline and says so;
+- 64 MiB of memory; it bounds how much a script holds, not how long one
+  built-in runs;
+- 64 KiB of `print` output (cut beyond, and said so);
+- a return value of at most 1 MiB of JSON (larger is an error: return less,
+  or print or query in parts);
+- at most 4 `script_eval` scripts at once; a fifth is refused with "too many
+  scripts running" (the CLI and the suite run one at a time).
+
+**How it runs.** Each script's Luau VM runs in a child process, `iced-mcp
+script-worker` (the server's own binary), which has no app and no files.
+Every `app:method(…)` is a message to the server, which runs the step,
+holding the apps lock for that one step, and sends the result back. Other
+MCP requests, including other scripts, run between a script's steps,
+exactly as they do between separate tool calls. Because the VM is a process
+the server can always stop it: at the deadline plus 2 s whatever it is
+doing, and at once when the MCP request is cancelled. A thread could only be
+abandoned, still burning a core.
 
 **From the shell and in the suite.**
 
@@ -598,10 +613,11 @@ bridge behind a cargo feature that release builds do not enable.
 - A minimised window may not redraw, so requests to it time out.
 - Scripts: a step runs to completion or to the script's deadline; a deadline
   that cuts a request to the app short can leave that reply unread, and the
-  next request skips it by id. The deadline is checked between Luau
-  instructions and around app calls, not inside a long pure computation in
-  a single built-in (`string.rep` of a huge string runs into the memory
-  limit instead). Type checking needs the external `luau-analyze`: mlua does
+  next request skips it by id. A built-in that ignores the deadline is
+  stopped by killing the script's process 2 s past it, so such a script
+  reports no line. If the server itself is killed (SIGKILL), a worker busy
+  in such a built-in runs on until the built-in returns, then stops at its
+  own deadline. Type checking needs the external `luau-analyze`: mlua does
   not bind Luau's analyzer.
 
 ## Upgrading

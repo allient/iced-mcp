@@ -22,9 +22,19 @@ mod view;
 
 use rmcp::ServiceExt as _;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A script's Luau VM (spawned by the server, see `script`): no runtime.
+    if args.first().map(String::as_str) == Some(script::WORKER_COMMAND) {
+        std::process::exit(script::worker::main(
+            std::io::stdin().lock(),
+            std::io::stdout(),
+        ));
+    }
+    tokio::runtime::Runtime::new()?.block_on(serve(args))
+}
+
+async fn serve(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("iced-mcp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
