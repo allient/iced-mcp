@@ -55,7 +55,7 @@ cargo install iced-mcp-server
 
 ```toml
 [dependencies]
-iced-mcp = { version = "0.2", optional = true }
+iced-mcp = { version = "0.3", optional = true }
 
 [features]
 agent = ["dep:iced-mcp"]   # left out of release builds
@@ -88,6 +88,7 @@ login form"*. It starts the app itself.
 | **Wait** | `wait_for` text or an id, `wait_idle` until the screen settles |
 | **Ask the app** | `messages`, `logs`, `state`, `query`, `run_app_action`, `perf` (frame, view and update timings), `clipboard`, `fixtures` and `load_fixture` (named starting states for tests) |
 | **Test** | `flow_start` → `flow_finish` → `flow_run`, `screenshot_diff`, `run_sequence`, screen recording; assertions (`expect` a widget visible, focused, left of another, its text fitting; `expect_pixel`); `iced-mcp run-suite` runs them all in CI and keeps a failure bundle (tree, diagnostics, screenshot, logs) per failure |
+| **Script** | `script_eval` runs a sandboxed Luau script that does all of the above in one call (loops, conditions, assertions, a JSON result); `script_api` is its typed API |
 | **Sessions** | `launch` (in the background: it doesn't steal your keyboard focus on macOS), `connect`, `restart`, several apps at once |
 
 A snapshot reads like this:
@@ -101,6 +102,28 @@ window 1 "Todos" 1024×768 — 10 of 17 nodes
 
 Try it on the bundled demo from a clone: ask the agent to `launch`
 `cargo run -p iced-mcp --example todos`.
+
+## Scripts
+
+When the agent knows the path, one script replaces a dozen tool calls:
+
+```lua
+app:load_fixture("groceries")
+for _, item in ipairs(app:query("items", { done = false })) do
+  app:click({ text = item.text, exact = true })
+end
+app:wait_for("3 items, 3 done")
+return app:query("items")
+```
+
+`script_eval` runs it in a Luau sandbox (no files, no network, a deadline)
+and answers with what it printed, its return value as JSON and each step
+with its line; a failing step raises its own message at its line and
+leaves a failure bundle. Scripts are type-checked against
+[`iced-mcp.d.luau`](https://github.com/allient/iced-mcp/blob/main/crates/iced-mcp-server/iced-mcp.d.luau)
+when `luau-analyze` is installed, and run from CI with
+`iced-mcp run-script` or `run-suite`.
+See [Scripts](https://github.com/allient/iced-mcp/blob/main/docs/guide.md#scripts).
 
 ## Go further
 

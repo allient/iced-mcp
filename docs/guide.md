@@ -37,6 +37,7 @@ tooltip gets a name for free.
 | App side | `messages` · `logs` · `state` · `perf` · `clipboard` · `app_actions` · `run_app_action` · `query` · `fixtures` · `load_fixture` | Message log; stdout/stderr with a cursor and character budget; the app's state; frame/view/update timings; clipboard; actions and read-only queries the app registered (`app_actions` returns complete output schemas in structured content; queries answer JSON, also as MCP `structuredContent`); the app's named starting states (see [Fixtures](#fixtures)) |
 | Regression | `screenshot_diff` · `flow_start` · `flow_add_step` · `flow_finish` · `flow_run` | Visual baselines; record a session as a flow and replay it as a test |
 | Batch & video | `run_sequence` · `record_start` · `record_stop` | Several steps in one call; screen recording to mp4 |
+| Scripts | `script_eval` · `script_api` | A sandboxed Luau script that drives the apps in one call, with variables, loops and conditions; its typed API (see [Scripts](#scripts)) |
 
 `run_sequence`, `flow_add_step` and flows share one step vocabulary: `click`,
 `type_text`, `press_key`, `scroll`, `drag`, `hover`, `paste`, `wait_for`,
@@ -294,14 +295,157 @@ runners have). Use a prebuilt binary in the flow's launch command, record
 baselines on the same runner type (scale factor and fonts change pixels), and
 prefer `expect_query` / `expect_message` / `wait_for` over pixel diffs.
 
-Commit `.iced-mcp/flows/` and `.iced-mcp/baselines/`; ignore
-`.iced-mcp/diffs/`, `.iced-mcp/recordings/` and `.iced-mcp/failures/`:
+Commit `.iced-mcp/flows/`, `.iced-mcp/scripts/` and `.iced-mcp/baselines/`;
+ignore `.iced-mcp/diffs/`, `.iced-mcp/recordings/`, `.iced-mcp/screenshots/`
+and `.iced-mcp/failures/`:
 
 ```gitignore
 .iced-mcp/diffs/
 .iced-mcp/recordings/
+.iced-mcp/screenshots/
 .iced-mcp/failures/
 ```
+
+## Scripts
+
+A script does in one call what would take many: set up, act, check and
+report, with variables, loops and conditions. It is Luau (typed Lua) run
+by the server in a sandbox, against the same steps as `run_sequence` and
+flows, so it reuses fixtures, `expect`, `expect_pixel` and `diagnose`.
+
+```lua
+app:load_fixture("groceries")
+
+local open = app:query("items", { done = false })   -- the app's own model
+for _, item in ipairs(open) do
+  app:click({ text = item.text, exact = true })
+end
+
+app:wait_for("3 items, 3 done")
+for _, item in ipairs(app:query("items")) do
+  app:expect({ text = item.text, exact = true, visible = true, fits = true })
+end
+return #open
+```
+
+Run it with `script_eval {source}` (an agent), `iced-mcp run-script FILE`
+(a shell or CI), or as part of `run-suite` (below). The reply has what the
+script `print`ed, the value it `return`ed as JSON, every step with its
+script line and time, and the duration:
+
+```
+PASS script — 6 step(s) in 0.9s
+Type check: passed (luau-analyze).
+Steps:
+  1. ✓ line 1: load_fixture groceries (236 ms)
+  2. ✓ line 3: query items (10 ms)
+  3. ✓ line 5: click "milk" (291 ms)
+  …
+Return: 2
+```
+
+**The API.** Two globals: `app`, the app `script_eval {app}` names (else the
+default app), and `apps["name"]`, any connected app. Their methods are the
+step actions and take that step's arguments as a table (the tool's
+parameters without `app`); a string stands for the obvious one:
+
+| Method | Returns | Shorthand |
+|---|---|---|
+| `click` · `hover` · `type_text` · `paste` · `press_key` · `scroll` · `drag` | the step's reply (what was hit, the messages it caused) | `click("Add")` = `{text = "Add"}`; `type_text("hi")`; `press_key("Mod+S")` |
+| `wait_for` · `wait_idle` · `sleep(ms)` | the reply | `wait_for("Saved")` |
+| `load_fixture(name, args?)` (alias `fixture`) · `run_app_action(name, args?)` | the reply | |
+| `query(name, args?)` | the answer as a Lua value | |
+| `snapshot(window?)` | `{window, width, height, nodes}` | |
+| `find(selector)` · `find_all(selector)` | a node (or `nil`) · a list of nodes | `find("Save")` = `{text = "Save"}` |
+| `diagnose(args?)` | a list of findings `{kind, refs, ids, bounds, explanation}` | |
+| `messages(args?)` · `state(args?)` · `logs(args?)` | `{seq, at_ms, text}` list · the state text · output lines | |
+| `screenshot(name)` · `screenshot_diff(baseline)` | the reply; `screenshot` writes `.iced-mcp/screenshots/<name>.png` | |
+| `expect` · `expect_pixel` · `expect_no_diagnostics` · `expect_message` · `expect_query` | the reply; raise when the check fails | `expect_message("Saved")` |
+
+A node is the snapshot's node as a table: `ref`, `kind` (`text`,
+`text_input`, `scrollable`, `focusable`, `label`, `semantic`, `region`…),
+`text`, `id`, `bounds` and `visible` (`{x, y, width, height}`, `visible` nil
+when scrolled away), and flags such as `focused`, `interaction`, `role`,
+`value`, `checked`, `disabled`. A selector takes `id`, `text` (with
+`exact`), `role` (a semantic node's role or a node's kind) and `window`;
+every field given must match.
+
+`expect` takes the step's table form, `app:expect{ id = "total",
+text_contains = "3", fits = true }`, or a node and the checks:
+`app:expect(node, { visible = true })` aims at the node by its id, else its
+`ref` (refs hold until the screen changes).
+
+**Errors.** A step that fails raises a Lua error with the step's own message,
+prefixed with the script's chunk and line:
+`script:4: nothing visible matches #save. Visible text: […]`. Uncaught, it
+ends the script: the reply says why and where, and a failure bundle is
+written (as for flows, with `script.luau` in place of `flow.json`). Catch it
+with `pcall` when a failure is an answer, not a bug:
+
+```lua
+local ok, err = pcall(function() return app:click{ id = "dismiss" } end)
+if not ok then print("no banner:", err) end
+```
+
+**Types.** `iced-mcp.d.luau`
+([`crates/iced-mcp-server/iced-mcp.d.luau`](../crates/iced-mcp-server/iced-mcp.d.luau),
+also returned by `script_api`) declares every method with its argument and
+return types. Point an editor at it (luau-lsp: `--definitions`). Before a
+script runs, the server checks it with Luau's analyzer in strict mode, when
+`luau-analyze` is on `PATH` (or `ICED_MCP_LUAU_ANALYZE` names it), and
+reports type errors with their lines **without touching the app** (for
+`run-script --launch`, before the app is started). Without the analyzer the
+reply says the check did not run, and mistakes surface as runtime errors
+instead. A first line `--!nonstrict` or `--!nocheck` relaxes the check for
+one script. Install it from the Luau releases
+(<https://github.com/luau-lang/luau/releases>) or `brew install luau`.
+
+**The sandbox.** Each script gets a fresh Luau VM in sandbox mode (globals
+and libraries read-only) with only `coroutine`, `table`, `string`, `utf8`,
+`bit32`, `math` and `buffer`. There is no `io`, `os`, `debug`, `require`,
+`loadstring`, `getfenv`/`setfenv`, no files and no network: the only way
+out is `app` and `apps`, whose file writes stay under `.iced-mcp/`
+(baselines, screenshots, failure bundles). Limits: a wall-clock deadline
+(60 s by default; `timeout_ms` up to 30 min, `--timeout-ms` on the CLI),
+enforced inside Luau loops and calls and around every app call; 64 MiB of
+memory; 64 KiB of `print` output (cut beyond, and said so).
+
+**How it runs.** The step functions are async and share the server's apps
+behind a lock, while a Luau VM is neither thread-safe nor async. So each
+script runs on its own thread that owns its VM; an app call blocks that
+thread (not the server's async runtime) until the step finishes, holding the
+apps lock for that one step. Other MCP requests, including other scripts,
+run between a script's steps, exactly as they do between separate tool
+calls. Cancelling the request stops the script at its next loop iteration or
+app call.
+
+**From the shell and in the suite.**
+
+```sh
+iced-mcp run-script FILE [--launch CMD] [--root DIR] [--timeout-ms N] [--update-baselines]
+# exit 0: the script finished · 1: it failed (error, failed step, type error, launch) · 2: bad arguments or an unreadable file
+```
+
+`--launch CMD` starts the app, runs the script on it and stops it. `run-suite`
+runs `.iced-mcp/scripts/*.luau` after the flows, like fragments: on the app
+`--launch` starts, one line each (`PASS add-three.luau (1.3s)`), with
+`--only` (matching the name without `.luau`), `--repeat`, `--until-fail`,
+`--fail-fast`, `--update-baselines` and failure bundles. A script sets up
+its own state (`app:load_fixture(…)` first). The repository's
+[`examples/todos/.iced-mcp/scripts`](../examples/todos/.iced-mcp/scripts)
+holds three for the todos example:
+
+```sh
+cargo build -p iced-mcp --example todos
+iced-mcp run-suite --root examples/todos --launch target/debug/examples/todos
+```
+
+**Scripts or tools?** Use single tools to explore: look, try one thing, look
+again. Use a script once you know the path: several steps you need not watch
+in between, a loop over rows, a check that depends on what the app says, or
+a regression test you want to read like code. Flows remain the format
+`flow_start` records; a script is the hand-written (or agent-written)
+counterpart.
 
 ## Settling
 
@@ -452,6 +596,13 @@ bridge behind a cargo feature that release builds do not enable.
   pick an item.
 - Hover effects last until the next real mouse event over the window.
 - A minimised window may not redraw, so requests to it time out.
+- Scripts: a step runs to completion or to the script's deadline; a deadline
+  that cuts a request to the app short can leave that reply unread, and the
+  next request skips it by id. The deadline is checked between Luau
+  instructions and around app calls, not inside a long pure computation in
+  a single built-in (`string.rep` of a huge string runs into the memory
+  limit instead). Type checking needs the external `luau-analyze`: mlua does
+  not bind Luau's analyzer.
 
 ## Upgrading
 
@@ -483,33 +634,14 @@ sides:
 | `ICED_MCP_FIXTURE` | Load this fixture once the app has booted (`launch {fixture}` sets it) |
 | `ICED_MCP_FIXTURE_ARGS` | The fixture's args, as JSON |
 | `ICED_MCP_BACKGROUND` | `1`: do not take keyboard focus (macOS; `launch` sets it unless `background: false`) |
+| `ICED_MCP_LUAU_ANALYZE` | The `luau-analyze` that type-checks scripts (default: the one on `PATH`); server side |
 
 ## Roadmap
 
 - Tests for multi-window `daemon` apps.
-- [ ] **Luau scripts** (planned, not scheduled). Let an agent send one small
-  script instead of many separate tool calls: set up, act, check and report in
-  a single round trip. A strict, type-checked Luau sandbox in the server (no
-  files, no network, only the app), one `app` global over the existing tools,
-  so it reuses fixtures, `expect`, `expect_pixel` and `diagnose`, and an
-  `iced-mcp.d.luau` API reference for editors and agents.
-
-  ```lua
-  app:fixture("cart-with-3-items")
-  app:click{ id = "checkout" }
-  app:wait_for{ text = "Total" }
-  for _, row in ipairs(app:find_all{ role = "row" }) do
-    app:expect(row):fits()
-  end
-  return app:query("total")
-  ```
-
-  Why: fewer round trips and tokens; real logic (conditions, loops,
-  variables, "until"); type errors caught before the app is touched; scripts
-  that double as readable regression tests. Open questions: the server takes
-  on Luau (`mlua`, C++ build) as a dependency, and how scripts relate to JSON
-  flows (record a script as a flow, or replace flows over time). Prior art:
-  [eguidev](https://github.com/cortesi/eguidev).
+- [x] **Luau scripts** (0.3.0): `script_eval`, `script_api`,
+  `iced-mcp run-script` and scripts in `run-suite`; see [Scripts](#scripts).
+  Open: recording a session as a script (as `flow_start` records a flow).
 
 ## Development
 
@@ -518,6 +650,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
+
+Building the server compiles Luau (C++), so it needs a C++ compiler (the
+GitHub runners and any Rust setup with a C toolchain have one). The script
+tests type-check with `luau-analyze` when it is installed and check the
+"not run" path otherwise.
 
 The JSON Schemas under `crates/*/schema/` are checked by tests; after a
 deliberate change regenerate them with `ICED_MCP_UPDATE_SCHEMA=1 cargo test

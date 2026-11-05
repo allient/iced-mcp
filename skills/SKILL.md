@@ -1,6 +1,6 @@
 ---
 name: iced-mcp
-description: Drive and test running iced (Rust) desktop apps through the iced-mcp MCP server. Use when launching an iced app, reading its screen, clicking or typing in it, checking a UI change, writing or running flows (regression tests) with fixtures and expect assertions, running the suite, or reading a failure bundle.
+description: Drive and test running iced (Rust) desktop apps through the iced-mcp MCP server. Use when launching an iced app, reading its screen, clicking or typing in it, checking a UI change, running several steps at once as a Luau script, writing or running flows and scripts (regression tests) with fixtures and expect assertions, running the suite, or reading a failure bundle.
 ---
 
 # Using iced-mcp
@@ -25,6 +25,25 @@ in reply. Full reference: `docs/guide.md`.
    reacted" means you missed the target. Then `wait_for`, `state`, `query`.
 5. **Check layout** after UI edits: `diagnose` (overlaps, clipping, text
    that does not fit, duplicate ids) and `audit` (unnamed controls).
+
+## Scripts or single tools
+
+- **Single tools** while exploring: you need to see the screen between
+  steps, or you do not know the path yet.
+- **`script_eval`** once you know it: several steps you need not watch,
+  loops over rows, branches on what the app says (`app:query`,
+  `app:find_all`), checks that must all hold. One round trip; the reply has
+  the output, the `return` value as JSON and each step with its line.
+- Methods mirror the steps with the same arguments as a table:
+  `app:click{ id = "save" }`, `app:type_text{ id = "q", text = "BTC",
+  submit = true }`, `app:wait_for("Saved")`, `app:expect{ id = "total",
+  text_contains = "3" }`; `apps["other"]` for a second app. Full typed
+  API: `script_api`.
+- A failing step raises `script:LINE: <the step's message>` and leaves a
+  failure bundle; `pcall` it only when failing is an expected answer.
+- Save a script as `.iced-mcp/scripts/<name>.luau` to make it a test:
+  `iced-mcp run-suite --launch CMD` runs it with the flows. Start it with
+  `app:load_fixture(…)`.
 
 ## Tests
 

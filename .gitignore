@@ -1,2 +1,7 @@
 /target
 .DS_Store
+# iced-mcp run output (see docs/guide.md)
+.iced-mcp/diffs/
+.iced-mcp/recordings/
+.iced-mcp/screenshots/
+.iced-mcp/failures/
