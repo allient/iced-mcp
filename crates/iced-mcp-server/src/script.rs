@@ -877,7 +877,15 @@ fn dispatch(
         | "expect_query" => step(method, args_json(lua, first)?),
         "wait_for" => step(method, args_or(lua, first, "text")?),
         "expect_message" => step(method, args_or(lua, first, "contains")?),
-        "screenshot_diff" => step(method, args_or(lua, first, "baseline")?),
+        "screenshot_diff" => {
+            // A baseline is a file name under .iced-mcp/baselines: scripts
+            // may not write elsewhere.
+            let args = args_or(lua, first, "baseline")?;
+            if let Some(name) = args.get("baseline").and_then(serde_json::Value::as_str) {
+                flow::check_name(name).map_err(|e| e.replacen("flow name", "baseline", 1))?;
+            }
+            step(method, args)
+        }
         "run_app_action" | "load_fixture" | "fixture" => {
             let name = string_arg(&first, "the name")?;
             let args = any_json(lua, second)?;
@@ -1437,6 +1445,16 @@ mod tests {
             out.error.unwrap().message,
             "script:1: bad args: find needs id, text or role"
         );
+        let out = sandbox_run("app:screenshot_diff('../../outside')");
+        assert!(
+            out.error
+                .unwrap()
+                .message
+                .contains("baseline `../../outside` must be"),
+            "baselines stay under .iced-mcp"
+        );
+        let out = sandbox_run("app:screenshot('../x')");
+        assert!(out.error.unwrap().message.contains("must be 1–80 letters"));
         let out = sandbox_run("app:clik('x')");
         assert!(out.error.unwrap().message.contains("clik"));
     }
